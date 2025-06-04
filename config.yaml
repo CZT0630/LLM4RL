@@ -1,0 +1,47 @@
+# config.yaml
+environment:
+  num_devices: 5
+  num_edges: 2
+  num_clouds: 1
+  device_config:
+    cpu_capacity: 2.0  # GHz
+    memory_capacity: 4.0  # GB
+    battery_capacity: 100.0  # mAh
+  edge_config:
+    cpu_capacity: 8.0  # GHz
+    memory_capacity: 16.0  # GB
+  cloud_config:
+    cpu_capacity: 32.0  # GHz
+    memory_capacity: 64.0  # GB
+  task_config:
+    types: ["computation_intensive", "data_intensive", "balanced"]
+    min_computation: 100  # 最小计算量 (MI)
+    max_computation: 1000  # 最大计算量 (MI)
+    min_data_size: 1  # 最小数据量 (MB)
+    max_data_size: 100  # 最大数据量 (MB)
+    min_deadline: 10  # 最小截止时间 (秒)
+    max_deadline: 60  # 最大截止时间 (秒)
+
+llm:
+  api_key: "YOUR_API_KEY"  # OpenAI API密钥
+  model_name: "gpt-3.5-turbo"  # 使用的LLM模型
+  query_frequency: 10  # 每多少个episode咨询一次LLM
+
+maddpg:
+  lr_actor: 1e-4  # Actor网络学习率
+  lr_critic: 1e-3  # Critic网络学习率
+  gamma: 0.99  # 折扣因子
+  tau: 0.005  # 目标网络软更新参数
+  buffer_size: 1000000  # 经验回放缓冲区大小
+  batch_size: 100  # 训练批次大小
+  max_episodes: 1000  # 最大训练episode数
+  max_steps: 200  # 每个episode的最大步数
+
+training:
+  save_dir: "results"  # 模型和结果保存目录
+  checkpoint_freq: 100  # 每多少个episode保存一次模型
+  eval_freq: 10  # 每多少个episode评估一次模型
+
+testing:
+  num_episodes: 10  # 测试episode数
+  render: false  # 是否可视化测试过程
