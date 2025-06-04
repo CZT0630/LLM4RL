@@ -1,7 +1,7 @@
 # maddpg/maddpg_agent.py
 import torch
 import numpy as np
-from .actor_critic import Actor, Critic
+from .maddpg_actor_critic import Actor, Critic
 from .replay_buffer import ReplayBuffer
 from .noise import OUNoise
 

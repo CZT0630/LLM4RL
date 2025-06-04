@@ -4,7 +4,7 @@ import torch
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from llm_assistant.llm_client import LLMClient
 from llm_assistant.response_parser import ResponseParser
-from maddpg.maddpg_agent import MADDPGAgent
+from algos.maddpg_agent import MADDPGAgent
 from utils.config import load_config
 
 
