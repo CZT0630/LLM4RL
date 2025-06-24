@@ -1,27 +1,35 @@
 # llm_assistant/llm_client.py
-import openai
+import requests
 import json
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
 class LLMClient:
-    def __init__(self, api_key, model_name="gpt-3.5-turbo"):
-        openai.api_key = api_key
+    def __init__(self, model_name="qwne3-14b", server_url="http://10.200.1.35"):
+        # self.api_key = api_key
         self.model_name = model_name
+        self.server_url = server_url
         self.retry_attempts = 3
         self.wait_min = 1
         self.wait_max = 4
+
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def query(self, prompt):
         """向LLM发送查询并获取响应"""
         try:
-            response = openai.ChatCompletion.create(
-                model=self.model_name,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return response.choices[0].message.content.strip()
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            data = {
+                "model": self.model_name,
+                "prompt": prompt
+            }
+            response = requests.post(f"{self.server_url}/generate", headers=headers, json=data)
+            response.raise_for_status()
+            return response.json().get("response", "").strip()
         except Exception as e:
             print(f"LLM查询失败: {e}")
             raise

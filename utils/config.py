@@ -6,6 +6,9 @@ def load_config(config_path="config.yaml"):
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
+        # 如果没有seed则加上默认seed
+        if 'seed' not in config:
+            config['seed'] = 42
         return config
     except FileNotFoundError:
         print(f"配置文件 {config_path} 不存在，使用默认配置")
@@ -42,9 +45,9 @@ def get_default_config():
             }
         },
         "llm": {
-            "api_key": "YOUR_API_KEY",
-            "model_name": "gpt-3.5-turbo",
-            "query_frequency": 10  # 每多少个episode查询一次LLM
+            # "api_key": "YOUR_API_KEY",
+            "model_name": "qwen3-14b",
+            "query_frequency": 1  # 每多少个episode查询一次LLM
         },
         "maddpg": {
             "lr_actor": 1e-4,
@@ -55,5 +58,6 @@ def get_default_config():
             "batch_size": 100,
             "max_episodes": 1000,
             "max_steps": 200
-        }
+        },
+        "seed": 42
     }

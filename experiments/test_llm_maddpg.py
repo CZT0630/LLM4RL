@@ -1,6 +1,7 @@
 # experiments/test_llm_maddpg.py
 import numpy as np
 import torch
+import random
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from llm_assistant.llm_client import LLMClient
 from llm_assistant.response_parser import ResponseParser
@@ -8,10 +9,21 @@ from algos.maddpg_agent import MADDPGAgent
 from utils.config import load_config
 
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def test_llm_maddpg(model_path, config=None):
     # 加载配置
     if config is None:
         config = load_config()
+    set_seed(config.get('seed', 42))
 
     # 创建环境
     env = CloudEdgeDeviceEnv(config['environment'])

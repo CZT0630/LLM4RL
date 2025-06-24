@@ -1,16 +1,16 @@
 # config.yaml
 environment:
-  num_devices: 5
-  num_edges: 2
-  num_clouds: 1
-  device_config:
+  num_devices: 5  # 终端用户设备数量
+  num_edges: 2  # 边缘服务器数量
+  num_clouds: 1 # 云中心服务器数量
+  device_config:  # 终端设备规格设置（cpu、存储、电池大小）
     cpu_capacity: 2.0  # GHz
     memory_capacity: 4.0  # GB
     battery_capacity: 100.0  # mAh
-  edge_config:
+  edge_config:  # 边缘服务器设置
     cpu_capacity: 8.0  # GHz
     memory_capacity: 16.0  # GB
-  cloud_config:
+  cloud_config:  # 云中心服务器设置
     cpu_capacity: 32.0  # GHz
     memory_capacity: 64.0  # GB
   task_config:
@@ -21,11 +21,13 @@ environment:
     max_data_size: 100  # 最大数据量 (MB)
     min_deadline: 10  # 最小截止时间 (秒)
     max_deadline: 60  # 最大截止时间 (秒)
+  render: false  # 是否可视化测试过程
+seed: 42  # 随机种子
 
 llm:
-  api_key: "YOUR_API_KEY"  # OpenAI API密钥
-  model_name: "deepseek-70B"  # 使用的LLM模型
-  query_frequency: 10  # 每多少个episode咨询一次LLM
+  # api_key: "YOUR_API_KEY"  # OpenAI API密钥
+  model_name: "qwen3-14b"  # 使用的LLM模型
+  query_frequency: 1  # 每多少个episode咨询一次LLM
 
 maddpg:
   lr_actor: 1e-4  # Actor网络学习率
@@ -33,7 +35,7 @@ maddpg:
   gamma: 0.99  # 折扣因子
   tau: 0.005  # 目标网络软更新参数
   buffer_size: 1000000  # 经验回放缓冲区大小
-  batch_size: 100  # 训练批次大小
+  batch_size: 64  # 训练批次大小
   max_episodes: 1000  # 最大训练episode数
   max_steps: 200  # 每个episode的最大步数
 
@@ -44,4 +46,3 @@ training:
 
 testing:
   num_episodes: 10  # 测试episode数
-  render: false  # 是否可视化测试过程
