@@ -1,0 +1,8 @@
+# LLM4RL 项目依赖
+numpy>=1.19.0
+pyyaml
+gymnasium
+matplotlib
+torch>=1.8.0
+tenacity
+openai 

@@ -3,6 +3,7 @@ import argparse
 from experiments.train_llm_maddpg import train_llm_maddpg
 from experiments.test_llm_maddpg import test_llm_maddpg
 from utils.config import load_config
+# from utils.config import get_default_config as load_config
 
 
 def main():

@@ -59,6 +59,8 @@ class CloudEdgeDeviceEnv(gym.Env):
 
         # 生成新任务
         self.tasks = self.task_generator.generate_tasks(self.num_devices)
+        # 新增：初始化任务完成状态
+        self.task_done_flags = [False for _ in range(self.num_devices)]
 
         return self._get_observation()
 
@@ -114,6 +116,9 @@ class CloudEdgeDeviceEnv(gym.Env):
             # 检查任务是否完成
             if total_delay > task['deadline']:
                 rewards[i] -= 10  # 任务超时惩罚
+                self.task_done_flags[i] = False  # 超时视为未完成
+            elif total_delay <= task['deadline']:
+                self.task_done_flags[i] = True  # 正常完成
 
         # 检查是否所有设备电池耗尽或任务完成
         battery_depleted = all(device.battery <= 0 for device in self.devices)
@@ -162,4 +167,4 @@ class CloudEdgeDeviceEnv(gym.Env):
 
     def _is_task_completed(self, device_idx):
         # 检查任务是否完成
-        return True  # 简化处理，实际应跟踪任务状态
+        return self.task_done_flags[device_idx]

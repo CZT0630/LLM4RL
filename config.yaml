@@ -24,7 +24,7 @@ environment:
 
 llm:
   api_key: "YOUR_API_KEY"  # OpenAI API密钥
-  model_name: "gpt-3.5-turbo"  # 使用的LLM模型
+  model_name: "deepseek-70B"  # 使用的LLM模型
   query_frequency: 10  # 每多少个episode咨询一次LLM
 
 maddpg:
