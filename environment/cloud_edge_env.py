@@ -71,23 +71,8 @@ class CloudEdgeDeviceEnv(gym.Env):
             cs = CloudServer(i)
             self.cloud_servers.append(cs)
 
-    @property
-    def devices(self):
-        """返回所有用户设备（用于LLM咨询）"""
-        return self.user_equipments
-
-    @property 
-    def edge_servers_list(self):
-        """返回边缘服务器列表"""
-        return self.edge_servers
-        
-    @property
-    def cloud_servers_list(self):
-        """返回云服务器列表"""
-        return self.cloud_servers
-
     def reset(self, seed=None, options=None):
-        """重置环境 - 不预生成任务，等待第一个step"""
+        """重置环境"""
         if seed is not None:
             np.random.seed(seed)
             
@@ -99,36 +84,25 @@ class CloudEdgeDeviceEnv(gym.Env):
         for cs in self.cloud_servers:
             cs.reset()
 
-        # 重置episode计数器
-        self.episode_step = 0
+        # 生成新任务
+        task_data_list = self.task_generator.generate_tasks(self.num_devices)
+        self.tasks = [Task(task_data) for task_data in task_data_list]
         
-        # 生成第一步的任务（每step都会生成新任务）
-        self._generate_new_tasks()
+        # 任务完成状态
+        self.task_done_flags = [False for _ in range(self.num_devices)]
+        self.episode_step = 0
 
         return self._get_observation(), {}
 
-    def _generate_new_tasks(self):
-        """为每个设备生成新任务"""
-        print(f"  生成新任务 (Step {self.episode_step + 1})")
-        task_data_list = self.task_generator.generate_tasks(self.num_devices)
-        self.current_tasks = [Task(task_data) for task_data in task_data_list]
-
-    def step(self, actions, llm_actions=None):
-        """
-        执行一步动作
-        
-        Args:
-            actions: Agent的动作 shape=(num_devices, 4) [α1, α2, α3, edge_id]
-            llm_actions: LLM专家动作 shape=(num_devices, 4) 或 list
-        
-        Returns:
-            observation, rewards, terminated, truncated, info
-        """
+    def step(self, actions):
+        """执行一步动作"""
         self.episode_step += 1
         
         # 解析动作：actions是形状为(num_devices, 4)的数组
         rewards = np.zeros(self.num_devices)
-        
+        terminated = False
+        truncated = False
+
         # 性能指标统计
         total_latencies = []
         total_energies = []
@@ -145,24 +119,19 @@ class CloudEdgeDeviceEnv(gym.Env):
             local_baselines.append(metrics['local_baseline'])
 
         # 检查终止条件
-        max_steps_reached = self.episode_step >= self.max_steps
+        tasks_completed = all(self.task_done_flags)
+        max_steps_reached = self.episode_step >= 100  # 最大步数限制
         
-        # 在新的逻辑中，每个step处理完任务后，不需要任务完成状态跟踪
-        # Episode只在达到最大步数时终止
-        terminated = False
+        terminated = tasks_completed
         truncated = max_steps_reached
-
-        # 如果还没结束，为下一步生成新任务
-        if not (terminated or truncated):
-            self._generate_new_tasks()
 
         # 构建info字典
         info = {
             'total_latencies': total_latencies,
             'total_energies': total_energies, 
             'local_baselines': local_baselines,
-            'episode_step': self.episode_step,
-            'llm_actions': llm_actions if llm_actions is not None else []
+            'task_completion_rate': sum(self.task_done_flags) / len(self.task_done_flags),
+            'episode_step': self.episode_step
         }
 
         return self._get_observation(), rewards, terminated, truncated, info
@@ -182,7 +151,7 @@ class CloudEdgeDeviceEnv(gym.Env):
             
         # 获取设备和任务
         ue = self.user_equipments[device_idx]
-        task = self.current_tasks[device_idx]
+        task = self.tasks[device_idx]
         task.set_split_ratios(alpha1, alpha2, alpha3)
         
         # 计算卸载策略的时延和能耗
@@ -198,10 +167,13 @@ class CloudEdgeDeviceEnv(gym.Env):
             total_latency, total_energy, baseline_latency, baseline_energy
         )
         
-        # 检查任务是否在截止时间内完成
-        if total_latency > task.deadline:
+        # 检查任务完成状态
+        if total_latency <= task.deadline:
+            self.task_done_flags[device_idx] = True
+        else:
             # 任务超时惩罚
             reward -= 1.0
+            self.task_done_flags[device_idx] = False
             
         # 更新设备状态
         ue.battery -= total_energy * 0.001  # 简化的电池消耗更新
@@ -336,9 +308,9 @@ class CloudEdgeDeviceEnv(gym.Env):
         for cs in self.cloud_servers:
             cs_states.extend(cs.get_state())
             
-        # 当前任务状态（归一化）
+        # 任务状态（归一化）
         task_states = []
-        for task in self.current_tasks:
+        for task in self.tasks:
             # 任务类型编码
             type_encoding = {'small': 0.33, 'medium': 0.67, 'large': 1.0}
             task_type_val = type_encoding.get(task.task_type, 0.67)
@@ -362,41 +334,11 @@ class CloudEdgeDeviceEnv(gym.Env):
         
         return full_state
 
-    def get_device_info(self):
-        """获取设备信息，用于LLM咨询"""
-        device_info = []
-        for ue in self.user_equipments:
-            device_info.append({
-                "cpu": ue.cpu_frequency,
-                "memory": 2.0,  # 假设2GB内存
-                "battery": ue.battery / ue.battery_capacity
-            })
-        return device_info
-    
-    def get_edge_info(self):
-        """获取边缘服务器信息"""
-        edge_info = []
-        for es in self.edge_servers:
-            edge_info.append({
-                "cpu": es.cpu_frequency,
-                "memory": es.memory_capacity
-            })
-        return edge_info
-    
-    def get_cloud_info(self):
-        """获取云服务器信息"""
-        cloud_info = []
-        for cs in self.cloud_servers:
-            cloud_info.append({
-                "cpu": cs.cpu_frequency,
-                "memory": cs.memory_capacity
-            })
-        return cloud_info
-
     def render(self, mode='human'):
         """渲染环境状态"""
         if mode == 'human':
             print(f"\n=== Episode Step {self.episode_step} ===")
+            print(f"Tasks completed: {sum(self.task_done_flags)}/{len(self.task_done_flags)}")
             
             # 显示设备状态
             print("\nUE States:")
@@ -407,9 +349,10 @@ class CloudEdgeDeviceEnv(gym.Env):
             for i, es in enumerate(self.edge_servers):
                 print(f"  ES{i}: CPU={es.cpu_frequency:.0f}GHz, Load={es.current_cpu_load:.2f}")
                 
-            print("\nCurrent Tasks:")
-            for i, task in enumerate(self.current_tasks):
-                print(f"  Task{i}: {task.task_type}, {task.data_size_mb:.1f}MB, {task.deadline:.2f}s")
+            print("\nTask Info:")
+            for i, task in enumerate(self.tasks):
+                status = "✓" if self.task_done_flags[i] else "✗"
+                print(f"  Task{i}: {task.task_type}, {task.data_size_mb:.1f}MB, {task.deadline:.2f}s {status}")
 
     def close(self):
         """关闭环境"""
