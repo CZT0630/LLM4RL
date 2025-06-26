@@ -2,6 +2,7 @@ import numpy as np
 import os
 import random
 import torch
+import gymnasium as gym
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from llm_assistant.llm_client import LLMClient
 from llm_assistant.response_parser import ResponseParser
@@ -33,8 +34,12 @@ def train_llm(config=None):
 
     # 创建LLM客户端
     llm_client = LLMClient(
-        api_key=config['llm']['api_key'],
-        model_name=config['llm']['model_name']
+        api_key=config['llm'].get('api_key', ''),
+        model_name=config['llm']['model_name'],
+        server_url=config['llm'].get('server_url', 'http://10.200.1.35:8888/v1/completions'),
+        timeout_connect=config['llm'].get('timeout_connect', 120),
+        timeout_read=config['llm'].get('timeout_read', 300),
+        use_mock=config['llm'].get('use_mock_when_unavailable', True)
     )
 
     # 训练参数
@@ -47,37 +52,39 @@ def train_llm(config=None):
     all_actions = []
 
     for episode in range(max_episodes):
-        state = env.reset()
+        state, _ = env.reset()
         episode_reward = 0
         episode_delay = 0
         episode_energy = 0
         for step in range(max_steps):
-            # 获取LLM建议
+            # 获取LLM策略并执行
             device_info = [{"cpu": d.cpu_capacity, "memory": d.memory_capacity} for d in env.devices]
             edge_info = [{"cpu": e.cpu_capacity, "memory": e.memory_capacity} for e in env.edge_servers]
             cloud_info = [{"cpu": c.cpu_capacity, "memory": c.memory_capacity} for c in env.cloud_servers]
-            strategies = llm_client.get_unload_strategy(state, device_info, edge_info, cloud_info)
-            llm_advice = ResponseParser.parse_unload_strategy(
-                strategies,
+            llm_strategies = llm_client.get_unload_strategy(state, device_info, edge_info, cloud_info)
+            
+            # 解析LLM响应
+            actions = ResponseParser.parse_unload_strategy(
+                llm_strategies,
                 env.num_devices,
                 env.num_edges,
                 env.num_clouds
             )
-            # 解析LLM建议为动作
-            actions = []
-            for i in range(num_agents):
-                agent_llm_advice = [a for a in llm_advice if a["task_id"] == i] if llm_advice else None
-                if agent_llm_advice and len(agent_llm_advice) > 0:
-                    # 解析卸载比例和目标节点
-                    offload_ratio = agent_llm_advice[0].get("offload_ratio", 0.0)
-                    target_node = agent_llm_advice[0].get("target_node", 0.0)
-                    actions.append([offload_ratio, target_node])
-                else:
-                    actions.append([0.0, 0.0])  # 默认本地执行
-            actions = np.array(actions)
+            
+            # 将策略转换为环境可接受的动作格式
+            action_list = []
+            for device_idx in range(env.num_devices):
+                device_action = next((a for a in actions if a["task_id"] == device_idx), 
+                                    {"offload_ratio": 0.0, "target_node": 0})
+                action_list.append([
+                    device_action["offload_ratio"],
+                    device_action["target_node"]
+                ])
+            actions = np.array(action_list)
             all_actions.append(actions)
             # 执行动作
-            next_state, rewards, done, _ = env.step(actions)
+            next_state, rewards, terminated, truncated, _ = env.step(actions)
+            done = terminated or truncated
             state = next_state
             episode_reward += sum(rewards)
             # 可选：统计延迟、能耗等

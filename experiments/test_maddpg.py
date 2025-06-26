@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import os
+import gymnasium as gym
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from algos.maddpg_agent import MADDPGAgent
 from utils.config import load_config
@@ -33,15 +34,34 @@ def test_maddpg(model_path, config=None):
         agents.append(agent)
     num_episodes = config['testing']['num_episodes']
     max_steps = config['maddpg']['max_steps']
+    all_episode_energy = []
+    all_episode_delay = []
+    all_episode_util = []
     for episode in range(num_episodes):
-        state = env.reset()
+        state, _ = env.reset()
         episode_reward = 0
+        episode_energy = 0
+        episode_delay = 0
+        episode_util = 0
+        step_count = 0
         for step in range(max_steps):
             actions = [agent.select_action(state, llm_advice=None, add_noise=False) for agent in agents]
-            next_state, rewards, done, _ = env.step(actions)
+            next_state, rewards, terminated, truncated, info = env.step(actions)
+            done = terminated or truncated
+            episode_energy += sum(info['energies'])
+            episode_delay += sum(info['delays'])
+            episode_util += sum(info['utilizations'])
+            step_count += 1
             state = next_state
             episode_reward += sum(rewards)
             if done:
                 break
-        print(f"[MADDPG] 测试 Episode {episode + 1} 完成，总奖励: {episode_reward:.2f}")
+        avg_energy = episode_energy / num_agents
+        avg_delay = episode_delay / num_agents
+        avg_util = episode_util / (num_agents * step_count) if step_count > 0 else 0
+        all_episode_energy.append(avg_energy)
+        all_episode_delay.append(avg_delay)
+        all_episode_util.append(avg_util)
+        print(f"[MADDPG] Episode {episode + 1} 平均能耗: {avg_energy:.4f}, 平均资源利用率: {avg_util:.4f}, 平均任务时延: {avg_delay:.4f}")
     print("[MADDPG] 测试完成!")
+    return all_episode_energy, all_episode_util, all_episode_delay

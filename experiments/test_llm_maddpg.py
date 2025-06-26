@@ -2,6 +2,8 @@
 import numpy as np
 import torch
 import random
+import os
+import gymnasium as gym
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from llm_assistant.llm_client import LLMClient
 from llm_assistant.response_parser import ResponseParser
@@ -30,8 +32,12 @@ def test_llm_maddpg(model_path, config=None):
 
     # 创建LLM客户端
     llm_client = LLMClient(
-        api_key=config['llm']['api_key'],
-        model_name=config['llm']['model_name']
+        api_key=config['llm'].get('api_key', ''),
+        model_name=config['llm']['model_name'],
+        server_url=config['llm'].get('server_url', 'http://10.200.1.35:8888/v1/completions'),
+        timeout_connect=config['llm'].get('timeout_connect', 120),
+        timeout_read=config['llm'].get('timeout_read', 300),
+        use_mock=config['llm'].get('use_mock_when_unavailable', True)
     )
 
     # 创建MADDPG智能体
@@ -70,35 +76,62 @@ def test_llm_maddpg(model_path, config=None):
     cloud_info = [{"cpu": cloud.cpu_capacity, "memory": cloud.memory_capacity} for cloud in env.cloud_servers]
 
     # 测试参数
-    num_episodes = 10
+    num_episodes = config['testing']['num_episodes']
     max_steps = config['maddpg']['max_steps']
 
-    # 测试循环
+    # 记录所有episode的指标
+    all_episode_energy = []
+    all_episode_delay = []
+    all_episode_util = []
+
     for episode in range(num_episodes):
-        state = env.reset()
+        state, _ = env.reset()
         episode_reward = 0
+        episode_energy = 0
+        episode_delay = 0
+        episode_util = 0
+        step_count = 0
 
         print(f"\n测试 Episode {episode + 1}/{num_episodes}")
 
         for step in range(max_steps):
-            # 选择动作（不添加探索噪声）
+            # 选择动作
             actions = []
+            
+            # 每步都咨询LLM获取建议
+            strategies = llm_client.get_unload_strategy(state, device_info, edge_info, cloud_info)
+            llm_advice = ResponseParser.parse_unload_strategy(
+                strategies,
+                env.num_devices,
+                env.num_edges,
+                env.num_clouds
+            )
+            
             for i, agent in enumerate(agents):
-                # 每步都咨询LLM获取建议
-                strategies = llm_client.get_unload_strategy(state, device_info, edge_info, cloud_info)
-                llm_advice = ResponseParser.parse_unload_strategy(
-                    strategies,
-                    env.num_devices,
-                    env.num_edges,
-                    env.num_clouds
-                )
-
-                agent_llm_advice = [a for a in llm_advice if a["task_id"] == i] if llm_advice else None
-                agent_action = agent.select_action(state, agent_llm_advice, add_noise=False)
+                # 为每个智能体提供全局状态和LLM指导
+                if llm_advice:
+                    agent_llm_advice = next((a for a in llm_advice if a["task_id"] == i), None)
+                    if agent_llm_advice:
+                        # 构建合适的LLM建议张量
+                        advice_tensor = torch.tensor([
+                            [
+                                agent_llm_advice.get("offload_ratio", 0.0),  # 卸载比例
+                                agent_llm_advice.get("target_node", 0.0)     # 目标节点
+                            ]
+                        ], dtype=torch.float32)
+                        agent_action = agent.select_action(state, advice_tensor, add_noise=False)
+                    else:
+                        # 如果没有针对该智能体的建议
+                        agent_action = agent.select_action(state, None, add_noise=False)
+                else:
+                    # 没有LLM建议
+                    agent_action = agent.select_action(state, None, add_noise=False)
+                
                 actions.append(agent_action)
 
             # 执行动作
-            next_state, rewards, done, info = env.step(actions)
+            next_state, rewards, terminated, truncated, info = env.step(actions)
+            done = terminated or truncated
 
             # 打印详细信息
             if step % 10 == 0:
@@ -115,6 +148,12 @@ def test_llm_maddpg(model_path, config=None):
 
                     print(f"  设备 {i}: 卸载比例={offload_ratio:.2f}, 目标={target_name}, 奖励={reward:.2f}")
 
+            # 累加能耗、时延、资源利用率
+            episode_energy += sum(info['energies'])
+            episode_delay += sum(info['delays'])
+            episode_util += sum(info['utilizations'])
+            step_count += 1
+
             state = next_state
             episode_reward += sum(rewards)
 
@@ -122,6 +161,13 @@ def test_llm_maddpg(model_path, config=None):
                 print(f"Episode {episode + 1} 完成，总奖励: {episode_reward:.2f}")
                 break
 
-        print(f"测试 Episode {episode + 1} 完成，总奖励: {episode_reward:.2f}")
+        avg_energy = episode_energy / num_agents
+        avg_delay = episode_delay / num_agents
+        avg_util = episode_util / (num_agents * step_count) if step_count > 0 else 0
+        all_episode_energy.append(avg_energy)
+        all_episode_delay.append(avg_delay)
+        all_episode_util.append(avg_util)
+        print(f"Episode {episode + 1} 平均能耗: {avg_energy:.4f}, 平均资源利用率: {avg_util:.4f}, 平均任务时延: {avg_delay:.4f}")
 
     print("测试完成!")
+    return all_episode_energy, all_episode_util, all_episode_delay

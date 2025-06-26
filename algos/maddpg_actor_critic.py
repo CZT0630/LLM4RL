@@ -5,10 +5,10 @@ import torch.nn.functional as F
 
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action, llm_input_dim=4):
+    def __init__(self, state_dim, action_dim, max_action, llm_input_dim=2):
         super(Actor, self).__init__()
 
-        # 状态编码器
+        # 状态编码器 - 处理设备、任务和环境状态
         self.state_encoder = nn.Sequential(
             nn.Linear(state_dim, 256),
             nn.ReLU(),
@@ -16,7 +16,7 @@ class Actor(nn.Module):
             nn.ReLU()
         )
 
-        # LLM建议编码器
+        # LLM建议编码器 - 处理LLM提供的卸载比例和目标节点
         self.llm_encoder = nn.Sequential(
             nn.Linear(llm_input_dim, 64),
             nn.ReLU(),
@@ -24,7 +24,7 @@ class Actor(nn.Module):
             nn.ReLU()
         )
 
-        # 合并层
+        # 合并层 - 融合状态表示和LLM建议
         self.combined = nn.Sequential(
             nn.Linear(128 + 32, 128),
             nn.ReLU(),
@@ -42,7 +42,7 @@ class Actor(nn.Module):
         # 处理LLM建议
         if llm_advice is None:
             # 如果没有LLM建议，使用默认值
-            llm_advice = torch.zeros(state.size(0), 4).to(state.device)
+            llm_advice = torch.zeros(state.size(0), 2).to(state.device)
 
         llm_repr = self.llm_encoder(llm_advice)
 

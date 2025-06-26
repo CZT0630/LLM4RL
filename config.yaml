@@ -1,48 +1,149 @@
 # config.yaml
+# 云边端三层架构实验配置
+# 基于最新实验设置要求
+
+# 环境配置
 environment:
-  num_devices: 5  # 终端用户设备数量
-  num_edges: 2  # 边缘服务器数量
-  num_clouds: 1 # 云中心服务器数量
-  device_config:  # 终端设备规格设置（cpu、存储、电池大小）
-    cpu_capacity: 2.0  # GHz
-    memory_capacity: 4.0  # GB
-    battery_capacity: 100.0  # mAh
-  edge_config:  # 边缘服务器设置
-    cpu_capacity: 8.0  # GHz
-    memory_capacity: 16.0  # GB
-  cloud_config:  # 云中心服务器设置
-    cpu_capacity: 32.0  # GHz
-    memory_capacity: 64.0  # GB
+  name: "cloud_edge_env"
+  
+  # 系统架构参数（按实验设置固定）
+  num_devices: 10       # 端侧设备数量（UE）
+  num_edges: 5          # 边缘服务器数量（ES）  
+  num_clouds: 1         # 云服务器数量（CS）
+
+  # 任务配置
   task_config:
-    types: ["computation_intensive", "data_intensive", "balanced"]
-    min_computation: 100  # 最小计算量 (MI)
-    max_computation: 1000  # 最大计算量 (MI)
-    min_data_size: 1  # 最小数据量 (MB)
-    max_data_size: 100  # 最大数据量 (MB)
-    min_deadline: 10  # 最小截止时间 (秒)
-    max_deadline: 60  # 最大截止时间 (秒)
-  render: false  # 是否可视化测试过程
-seed: 42  # 随机种子
+    # 兼容旧版本配置
+    types: ["small", "medium", "large"]
+    min_computation: 0.2    # 最小计算量 (Gcycles) - 对应1MB小任务
+    max_computation: 40     # 最大计算量 (Gcycles) - 对应200MB大任务
+    min_data_size: 1        # 最小数据量 (MB)
+    max_data_size: 200      # 最大数据量 (MB)
+    min_deadline: 1         # 最小截止时间 (秒)
+    max_deadline: 100       # 最大截止时间 (秒)
 
-llm:
-  # api_key: "YOUR_API_KEY"  # OpenAI API密钥
-  model_name: "qwen3-14b"  # 使用的LLM模型
-  query_frequency: 1  # 每多少个episode咨询一次LLM
+# 设备配置（已在代码中硬编码，此处仅作说明）
+device_specs:
+  user_equipment:
+    count: 10
+    cpu_frequency_range: [0.5, 1.0]    # GHz，异构配置
+    max_cpu_cycles: 500e6               # 500 Mcycles
+    battery_capacity: 4000              # mAh
+    alpha_ue: 1e-26                     # J/cycle
+    transmission_power: 0.5             # W
+    transmission_rate_to_edge: 1e9      # 1 Gbps
+    
+  edge_servers:
+    count: 5
+    cpu_frequencies: [5, 6, 8, 10, 12]  # GHz，异构配置
+    memory_capacity: 16                  # GB
+    alpha_es: 3e-26                     # J/cycle
+    transmission_rate_to_cloud: 10e9    # 10 Gbps
+    
+  cloud_servers:
+    count: 1
+    cpu_frequency: 20                   # GHz
+    memory_capacity: 64                 # GB
+    alpha_cs: 1e-27                    # J/cycle
+    parallel_factor: 4.0               # 并行处理能力
 
+# 网络配置
+network:
+  ue_to_edge_rate: 1e9      # 1 Gbps (6G无线链路)
+  edge_to_cloud_rate: 10e9  # 10 Gbps (光纤有线链路)
+
+# 任务特性配置  
+tasks:
+  processing_density: 0.2e9  # 0.2 Gcycles/MB
+  
+  # 任务类型定义
+  task_types:
+    small:
+      data_size_range: [1, 5]      # MB
+      description: "传感器数据、文本处理"
+      weight: 0.4                  # 40%概率
+      deadline_factor: [2.0, 5.0]  # 本地执行时间的2-5倍
+      
+    medium:
+      data_size_range: [10, 50]    # MB  
+      description: "短视频预处理、轻度图像识别"
+      weight: 0.4                  # 40%概率
+      deadline_factor: [1.5, 3.0]  # 本地执行时间的1.5-3倍
+      
+    large:
+      data_size_range: [100, 200]  # MB
+      description: "高清视频分析、复杂AI推理"
+      weight: 0.2                  # 20%概率
+      deadline_factor: [1.2, 2.0]  # 本地执行时间的1.2-2倍
+
+# MADDPG算法配置
 maddpg:
-  lr_actor: 1e-4  # Actor网络学习率
-  lr_critic: 1e-3  # Critic网络学习率
-  gamma: 0.99  # 折扣因子
-  tau: 0.005  # 目标网络软更新参数
-  buffer_size: 1000000  # 经验回放缓冲区大小
-  batch_size: 64  # 训练批次大小
-  max_episodes: 1000  # 最大训练episode数
-  max_steps: 200  # 每个episode的最大步数
+  num_agents: 10             # 等于设备数量
+  
+  # 网络结构
+  actor_hidden_dims: [128, 64]
+  critic_hidden_dims: [256, 128]
+  
+  # 训练参数
+  max_episodes: 1000
+  max_steps: 200
+  lr_actor: 0.001
+  lr_critic: 0.002
+  gamma: 0.99               # 折扣因子
+  tau: 0.005                # 软更新系数
+  
+  # 经验回放
+  buffer_size: 100000
+  batch_size: 64
+  
+  # 探索噪声
+  noise_type: "ou"          # Ornstein-Uhlenbeck噪声
+  noise_theta: 0.15
+  noise_sigma: 0.2
+  noise_decay: 0.995
 
+# LLM配置
+llm:
+  # LLM服务配置
+  base_url: "http://10.200.1.35:8888/v1"
+  model_name: "qwen2.5-14b-instruct"
+  api_key: "sk-no-key-required"
+  
+  # 连接参数
+  timeout: 120              # 连接超时时间(秒)
+  read_timeout: 300         # 读取超时时间(秒)
+  max_retries: 1            # 最大重试次数
+  
+  # LLM指导参数
+  temperature: 0.7
+  max_tokens: 1024
+  enable_expert_guidance: true
+  guidance_frequency: 10    # 每10步请求一次LLM指导
+
+# 训练配置
 training:
-  save_dir: "results"  # 模型和结果保存目录
-  checkpoint_freq: 100  # 每多少个episode保存一次模型
-  eval_freq: 10  # 每多少个episode评估一次模型
+  total_episodes: 2000
+  max_episode_steps: 100
+  
+  # 评估参数
+  eval_episodes: 10
+  eval_frequency: 100       # 每100个episode评估一次
+  
+  # 保存参数
+  save_frequency: 500       # 每500个episode保存一次模型
+  model_save_path: "results/models"
+  
+  # 日志配置
+  log_frequency: 10         # 每10个episode记录一次
+  tensorboard_log: true
+  
+# 随机种子
+seed: 42
 
-testing:
-  num_episodes: 10  # 测试episode数
+# 实验假设条件
+assumptions:
+  - "网络带宽和计算资源在短时窗口内稳定"
+  - "任务分割后无依赖关系，可按任意比例划分和卸载"  
+  - "边缘服务器和云端的资源分配为无优先级的非抢占式调度"
+  - "采用时分多址(TDMA)技术避免干扰"
+  - "云服务器视为无计算资源瓶颈，支持并行处理"

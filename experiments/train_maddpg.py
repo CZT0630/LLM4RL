@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import os
 import random
+import gymnasium as gym
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from algos.maddpg_agent import MADDPGAgent
 from utils.plotting import Plotter
@@ -64,7 +65,7 @@ def train_maddpg(config=None):
     all_actions = []
 
     for episode in range(max_episodes):
-        state = env.reset()
+        state, _ = env.reset()
         episode_reward = 0
         episode_delay = 0
         episode_energy = 0
@@ -73,7 +74,8 @@ def train_maddpg(config=None):
             actions = [agent.select_action(state, llm_advice=None) for agent in agents]
             all_actions.append(actions)
             # 执行动作
-            next_state, rewards, done, _ = env.step(actions)
+            next_state, rewards, terminated, truncated, _ = env.step(actions)
+            done = terminated or truncated
             # 存储经验
             for i, agent in enumerate(agents):
                 agent.replay_buffer.add(state, actions, rewards, next_state, done)

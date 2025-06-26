@@ -4,7 +4,7 @@ import yaml
 def load_config(config_path="config.yaml"):
     """加载配置文件"""
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         # 如果没有seed则加上默认seed
         if 'seed' not in config:
@@ -45,7 +45,7 @@ def get_default_config():
             }
         },
         "llm": {
-            # "api_key": "YOUR_API_KEY",
+            "api_key": "",
             "model_name": "qwen3-14b",
             "query_frequency": 1  # 每多少个episode查询一次LLM
         },

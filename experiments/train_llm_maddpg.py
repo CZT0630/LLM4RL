@@ -3,6 +3,8 @@ import numpy as np
 import torch
 import os
 import random
+import gymnasium as gym
+from typing import Union
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from llm_assistant.llm_client import LLMClient
 from llm_assistant.response_parser import ResponseParser
@@ -34,11 +36,24 @@ def train_llm_maddpg(config=None):
 
     # 创建环境
     env = CloudEdgeDeviceEnv(config['environment'])
+    if env is None:
+        raise ValueError("Failed to create the environment. Check the configuration.")
+
+    # 确认 action_space 是 Box 类型
+    action_space = env.action_space
+    if action_space is None or not isinstance(action_space, gym.spaces.Box):
+        raise ValueError("The action space is not a valid Box space.")
+    print(env.observation_space)
+    print(action_space)
 
     # 创建LLM客户端
     llm_client = LLMClient(
-        api_key=config['llm']['api_key'],
-        model_name=config['llm']['model_name']
+        api_key=config['llm'].get('api_key', ''),
+        model_name=config['llm']['model_name'],
+        server_url=config['llm'].get('server_url', 'http://10.200.1.35:8888/v1/completions'),
+        timeout_connect=config['llm'].get('timeout_connect', 120),
+        timeout_read=config['llm'].get('timeout_read', 300),
+        use_mock=config['llm'].get('use_mock_when_unavailable', True)
     )
 
     # 创建MADDPG智能体
@@ -55,12 +70,15 @@ def train_llm_maddpg(config=None):
             max_action=max_action,
             num_agents=num_agents,
             agent_idx=i,
-            lr_actor=config['maddpg']['lr_actor'],
-            lr_critic=config['maddpg']['lr_critic'],
-            gamma=config['maddpg']['gamma'],
-            tau=config['maddpg']['tau'],
+            lr_actor=float(config['maddpg']['lr_actor']),
+            lr_critic=float(config['maddpg']['lr_critic']),
+            gamma=float(config['maddpg']['gamma']),
+            tau=float(config['maddpg']['tau']),
             buffer_size=config['maddpg']['buffer_size'],
-            batch_size=config['maddpg']['batch_size']
+            batch_size=config['maddpg']['batch_size'],
+            distillation_alpha=float(config['maddpg'].get('distillation_alpha', 0.5)),
+            distillation_temp=float(config['maddpg'].get('distillation_temp', 1.0)),
+            distillation_loss_type=config['maddpg'].get('distillation_loss_type', 'mse')
         )
         agents.append(agent)
 
@@ -78,14 +96,21 @@ def train_llm_maddpg(config=None):
     edge_info = [{"cpu": edge.cpu_capacity, "memory": edge.memory_capacity} for edge in env.edge_servers]
     cloud_info = [{"cpu": cloud.cpu_capacity, "memory": cloud.memory_capacity} for cloud in env.cloud_servers]
 
+    # 存储LLM专家经验的缓冲区
+    llm_expert_buffer = {
+        'states': [],
+        'actions': []
+    }
+
     # 训练循环
     all_actions = []
 
     for episode in range(max_episodes):
-        state = env.reset()
+        state, _ = env.reset()
         episode_reward = 0
         episode_delay = 0
         episode_energy = 0
+        episode_llm_actions = []  # 记录本episode中LLM的建议动作
 
         # 每llm_query_freq个episode咨询一次LLM
         if episode % llm_query_freq == 0:
@@ -99,8 +124,26 @@ def train_llm_maddpg(config=None):
                 env.num_edges,
                 env.num_clouds
             )
+            
+            # 将LLM建议转换为动作格式并存储
+            llm_actions = []
+            for i in range(num_agents):
+                agent_llm_advice = next((a for a in llm_advice if a["task_id"] == i), None)
+                if agent_llm_advice:
+                    llm_actions.append([
+                        agent_llm_advice.get("offload_ratio", 0.0),
+                        agent_llm_advice.get("target_node", 0.0)
+                    ])
+                else:
+                    llm_actions.append([0.0, 0.0])
+            
+            # 记录LLM专家建议
+            llm_expert_buffer['states'].append(state)
+            llm_expert_buffer['actions'].append(llm_actions)
+            episode_llm_actions = llm_actions
         else:
             llm_advice = None
+            episode_llm_actions = []
 
         for step in range(max_steps):
             # 选择动作
@@ -108,17 +151,30 @@ def train_llm_maddpg(config=None):
             for i, agent in enumerate(agents):
                 # 为每个智能体提供全局状态和LLM指导
                 if llm_advice:
-                    agent_llm_advice = [a for a in llm_advice if a["task_id"] == i]
+                    agent_llm_advice = next((a for a in llm_advice if a["task_id"] == i), None)
+                    if agent_llm_advice:
+                        # 构建合适的LLM建议张量
+                        advice_tensor = torch.tensor([
+                            [
+                                agent_llm_advice.get("offload_ratio", 0.0),  # 卸载比例
+                                agent_llm_advice.get("target_node", 0.0)     # 目标节点
+                            ]
+                        ], dtype=torch.float32)
+                        agent_action = agent.select_action(state, advice_tensor)
+                    else:
+                        # 如果没有针对该智能体的建议
+                        agent_action = agent.select_action(state, None)
                 else:
-                    agent_llm_advice = None
-
-                agent_action = agent.select_action(state, agent_llm_advice)
+                    # 没有LLM建议
+                    agent_action = agent.select_action(state, None)
+                
                 actions.append(agent_action)
 
             all_actions.append(actions)
 
             # 执行动作
-            next_state, rewards, done, _ = env.step(actions)
+            next_state, rewards, terminated, truncated, info = env.step(actions)
+            done = terminated or truncated
 
             # 存储经验
             for i, agent in enumerate(agents):
@@ -129,8 +185,38 @@ def train_llm_maddpg(config=None):
             # 训练智能体
             if len(agents[0].replay_buffer) > config['maddpg']['batch_size']:
                 experiences = agents[0].replay_buffer.sample(config['maddpg']['batch_size'])
+                
+                # 准备LLM专家经验 (如果有)
+                llm_experiences = None
+                if len(llm_expert_buffer['states']) > 0:
+                    llm_experiences = (
+                        llm_expert_buffer['states'], 
+                        llm_expert_buffer['actions']
+                    )
+                
+                # 训练所有智能体
+                train_metrics = {}
                 for agent in agents:
-                    agent.train(experiences, agents)
+                    agent_metrics = agent.train(experiences, agents, llm_experiences)
+                    # 合并每个智能体的训练指标
+                    for k, v in agent_metrics.items():
+                        if k not in train_metrics:
+                            train_metrics[k] = []
+                        train_metrics[k].append(v)
+                
+                # 计算平均指标
+                avg_metrics = {k: np.mean(v) for k, v in train_metrics.items()}
+                if (episode + 1) % 10 == 0 and step == 0:
+                    print(f"  训练指标: Actor损失={avg_metrics['actor_loss']:.4f}, "
+                          f"Critic损失={avg_metrics['critic_loss']:.4f}, "
+                          f"蒸馏损失={avg_metrics['distillation_loss']:.4f}")
+                
+                # 记录训练指标
+                metrics_tracker.add_training_metrics(
+                    critic_loss=avg_metrics['critic_loss'],
+                    actor_loss=avg_metrics['actor_loss'],
+                    distillation_loss=avg_metrics['distillation_loss']
+                )
 
             state = next_state
             episode_reward += sum(rewards)
@@ -139,7 +225,7 @@ def train_llm_maddpg(config=None):
                 break
 
         # 记录指标
-        metrics_tracker.add_episode(episode_reward, episode_delay, episode_energy, llm_advice)
+        metrics_tracker.add_episode(episode_reward, episode_delay, episode_energy, llm_advice is not None)
 
         # 打印进度
         if (episode + 1) % 10 == 0:
@@ -154,7 +240,10 @@ def train_llm_maddpg(config=None):
                 torch.save(agent.actor.state_dict(), f"{save_dir}/actor_agent_{i}_episode_{episode + 1}.pth")
                 torch.save(agent.critic.state_dict(), f"{save_dir}/critic_agent_{i}_episode_{episode + 1}.pth")
 
+            # 绘制训练图表
             plotter.plot_rewards(metrics_tracker.episode_rewards)
+            plotter.plot_training_losses(metrics_tracker)
+            plotter.plot_metrics(metrics_tracker)
             if all_actions:
                 plotter.plot_action_distribution(np.array(all_actions).reshape(-1, 2))
 
@@ -165,6 +254,8 @@ def train_llm_maddpg(config=None):
 
     # 绘制最终图表
     plotter.plot_rewards(metrics_tracker.episode_rewards)
+    plotter.plot_training_losses(metrics_tracker)
+    plotter.plot_metrics(metrics_tracker)
     if all_actions:
         plotter.plot_action_distribution(np.array(all_actions).reshape(-1, 2))
 
