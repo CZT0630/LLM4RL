@@ -43,10 +43,10 @@ class TaskGenerator:
         
         # 生成数据大小
         min_size, max_size = self.task_sizes[task_type]
-        data_size_mb = random.uniform(min_size, max_size)
+        data_size = random.uniform(min_size, max_size)
         
         # 计算CPU周期需求：C = ε * D
-        cpu_cycles = data_size_mb * self.processing_density
+        cpu_cycles = data_size * self.processing_density
         
         # 生成截止时间（基于最慢设备的本地执行时间）
         # 假设最慢设备CPU频率为0.5GHz
@@ -61,7 +61,7 @@ class TaskGenerator:
         return {
             'task_id': task_id,
             'type': task_type,
-            'data_size_mb': data_size_mb,       # 数据大小 (MB)
+            'data_size': data_size,       # 数据大小 (MB)
             'cpu_cycles': cpu_cycles,           # CPU周期需求 (cycles)
             'deadline': deadline,               # 截止时间 (秒)
         }
@@ -104,7 +104,7 @@ class TaskGenerator:
             stats['task_types'][task_type] = len(type_tasks)
         
         # 数据大小统计
-        data_sizes = [t['data_size_mb'] for t in tasks]
+        data_sizes = [t['data_size'] for t in tasks]
         stats['data_size_stats'] = {
             'min': min(data_sizes),
             'max': max(data_sizes),
@@ -140,8 +140,8 @@ class Task:
         """从任务数据初始化任务对象"""
         self.task_id = task_data.get('task_id', 0)
         self.task_type = task_data.get('type', 'medium')
-        self.data_size_mb = task_data.get('data_size_mb', task_data.get('data_size', 50))
-        self.cpu_cycles = task_data.get('cpu_cycles', task_data.get('computation', 50) * 1e6)
+        self.task_data_size = task_data.get('data_size', task_data.get('data_size', 50))
+        self.task_workload = task_data.get('cpu_cycles', task_data.get('computation', 50) * 1e6)
         self.deadline = task_data.get('deadline', 10.0)
         
         # 任务分割比例 [α1, α2, α3] 其中 α1+α2+α3=1
@@ -166,7 +166,7 @@ class Task:
             raise ValueError("请先设置分割比例")
             
         workloads = [
-            self.cpu_cycles * ratio for ratio in self.split_ratios
+            self.task_workload * ratio for ratio in self.split_ratios
         ]
         return workloads
     
@@ -176,7 +176,7 @@ class Task:
             raise ValueError("请先设置分割比例")
             
         data_sizes = [
-            self.data_size_mb * ratio for ratio in self.split_ratios
+            self.task_data_size * ratio for ratio in self.split_ratios
         ]
         return data_sizes
     
@@ -185,8 +185,8 @@ class Task:
         return {
             'task_id': self.task_id,
             'type': self.task_type,
-            'data_size_mb': self.data_size_mb,
-            'cpu_cycles': self.cpu_cycles,
+            'data_size_mb': self.task_data_size,
+            'cpu_cycles': self.task_workload,
             'deadline': self.deadline,
             'split_ratios': self.split_ratios,
         }

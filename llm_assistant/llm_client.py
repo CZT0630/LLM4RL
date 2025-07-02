@@ -7,17 +7,21 @@ import re
 
 
 class LLMClient:
+    """LLM客户端类 - 适配简化设备模型"""
+    
     def __init__(self, api_key="", model_name="qwen3-14b", server_url="http://10.200.1.35:8888/v1/completions",
-                 timeout_connect=120, timeout_read=300, use_mock=True):
-        """初始化LLM客户端
+                 timeout_connect=120, timeout_read=300, use_mock=True, config=None):
+        """
+        初始化LLM客户端
         
         Args:
-            api_key: API密钥（此处可选）
+            api_key: API密钥
             model_name: 模型名称
             server_url: LLM服务器URL
-            timeout_connect: 连接超时时间（秒）- 增加到120秒
-            timeout_read: 读取超时时间（秒）- 增加到300秒
-            use_mock: 当LLM服务不可用时，是否使用模拟响应
+            timeout_connect: 连接超时时间（秒）
+            timeout_read: 读取超时时间（秒）
+            use_mock: 是否在失败时使用模拟模式
+            config: 配置字典，用于读取max_tokens等参数
         """
         self.api_key = api_key
         self.model_name = model_name
@@ -25,25 +29,49 @@ class LLMClient:
         self.timeout_connect = timeout_connect
         self.timeout_read = timeout_read
         self.use_mock = use_mock
-        print(f"初始化LLM客户端: {self.server_url}, 模型: {self.model_name}")
-        print(f"超时设置: 连接超时={self.timeout_connect}s, 读取超时={self.timeout_read}s")
-        print(f"模拟模式: {'开启' if self.use_mock else '关闭'}")
+        
+        # 从配置中读取LLM参数
+        if config and 'llm' in config:
+            llm_config = config['llm']
+            self.max_tokens = llm_config.get('max_tokens', 4096)
+            self.temperature = llm_config.get('temperature', 0.3)
+        else:
+            # 默认值
+            self.max_tokens = 4096
+            self.temperature = 0.3
+        
+        print(f"✅ LLM客户端初始化:")
+        print(f"  服务器: {self.server_url}")
+        print(f"  模型: {self.model_name}")
+        print(f"  最大tokens: {self.max_tokens}")
+        print(f"  温度: {self.temperature}")
+        print(f"  超时设置: 连接{self.timeout_connect}s, 读取{self.timeout_read}s")
+        print(f"  模拟模式: {'启用' if self.use_mock else '禁用'}")
 
     def query(self, prompt):
-        """向LLM发送查询并获取响应 - 单次请求，长时间等待"""
+        """
+        查询LLM服务器
+        
+        Args:
+            prompt: 输入提示词
+            
+        Returns:
+            str: LLM返回的文本响应
+        """
         try:
+            # 构建请求头
             headers = {
                 "Content-Type": "application/json",
             }
-            # 仅当API密钥不为空时添加Authorization头
-            if self.api_key and self.api_key != "":
+            if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
                 
+            # 构建请求数据
             data = {
                 "model": self.model_name,
                 "prompt": prompt,
-                "max_tokens": 2048,  # 返回内容的最大长度
-                "temperature": 0.1,  # 降低随机性，使输出更确定
+                "max_tokens": self.max_tokens,    # 使用配置中的值
+                "temperature": self.temperature,  # 使用配置中的值
                 "stream": False      # 不使用流式返回
             }
             
@@ -51,6 +79,8 @@ class LLMClient:
             print(f"目标服务器: {self.server_url}")
             print(f"模型名称: {self.model_name}")
             print(f"提示长度: {len(prompt)}字符")
+            print(f"最大tokens: {self.max_tokens}")
+            print(f"温度: {self.temperature}")
             print(f"连接超时: {self.timeout_connect}秒")
             print(f"读取超时: {self.timeout_read}秒")
             print("开始发送请求，请耐心等待LLM响应...")
@@ -123,6 +153,10 @@ class LLMClient:
             print("=" * 60)
             print(f"响应长度: {len(response_text)}字符")
             
+            # 保存原始响应JSON和解析后的文本
+            self._save_raw_response_to_file(response_data)
+            self._save_response_to_file(response_text, is_mock=False)
+            
             return response_text
                 
         except requests.exceptions.ConnectTimeout:
@@ -142,10 +176,10 @@ class LLMClient:
             print(f"\n❌ {error_msg}")
             raise Exception(error_msg)
 
-    def get_unload_strategy(self, env_state, device_info, edge_info, cloud_info):
-        """获取卸载策略建议"""
+    def get_unload_strategy(self, env_state, device_info, edge_info, cloud_info, tasks_info=None):
+        """获取卸载策略建议 - 适配简化设备模型"""
         # 构建提示
-        prompt = self._build_prompt(env_state, device_info, edge_info, cloud_info)
+        prompt = self._build_prompt(env_state, device_info, edge_info, cloud_info, tasks_info)
         
         # 保存提示到文件以便调试
         with open("last_prompt.txt", "w", encoding="utf-8") as f:
@@ -420,57 +454,156 @@ class LLMClient:
             for i in range(num_tasks)
         ]
 
-    def _build_prompt(self, env_state, device_info, edge_info, cloud_info):
-        """构建简洁明确的提示模板，要求直接返回JSON"""
-        # 导入提示模板构建函数
+    def _build_prompt(self, env_state, device_info, edge_info, cloud_info, tasks_info=None):
+        """构建LLM提示词 - 适配简化设备模型"""
         try:
-            from llm_assistant._build_prompt import build_prompt
-            return build_prompt(env_state, device_info, edge_info, cloud_info)
-        except ImportError:
-            # 如果导入失败，使用重新设计的简洁提示模板
-            print("使用重新设计的简洁提示模板")
+            # 导入新的提示词构建器
+            from llm_assistant.prompt_builder import PromptBuilder
             
-            # 解析环境状态
-            try:
-                env_state_array = np.array(env_state)
-                device_states = env_state_array[:len(device_info) * 4].reshape(len(device_info), 4)
-                edge_states = env_state_array[len(device_info) * 4: len(device_info) * 4 + len(edge_info) * 3].reshape(len(edge_info), 3)
-                cloud_states = env_state_array[len(device_info) * 4 + len(edge_info) * 3:len(device_info) * 4 + len(edge_info) * 3 + len(cloud_info) * 3].reshape(len(cloud_info), 3)
-                task_states = env_state_array[len(device_info) * 4 + len(edge_info) * 3 + len(cloud_info) * 3:].reshape(len(device_info), 3)
-            except Exception as e:
-                print(f"解析环境状态失败: {e}")
-                # 使用简单方式处理
-                device_states = np.zeros((len(device_info), 4))
-                edge_states = np.zeros((len(edge_info), 3))
-                cloud_states = np.zeros((len(cloud_info), 3))
-                task_states = np.zeros((len(device_info), 3))
-                
-            # 构建极简的提示模板
-            prompt = f"""作为云边端计算专家，为以下{len(device_info)}个任务制定卸载策略。
+            # 如果没有提供任务信息，从device_info推断
+            if tasks_info is None:
+                tasks_info = []
+                for i in range(len(device_info)):
+                    tasks_info.append({
+                        'task_id': f'task_{i}',
+                        'device_id': i,
+                        'task_type': 'medium',
+                        'data_size': 25.0,
+                        'cpu_cycles': 5e9,
+                        'deadline': 30.0,
+                        'remaining_time': 25.0
+                    })
+            
+            # 使用新的提示词构建器
+            prompt = PromptBuilder.build_offloading_strategy_prompt(
+                env_state, device_info, edge_info, cloud_info, tasks_info
+            )
+            print("✅ 使用简化设备模型的提示词构建器")
+            return prompt
+            
+        except ImportError as e:
+            print(f"⚠️ 提示词构建器导入失败: {e}")
+            # 如果导入失败，使用简化的备用提示模板
+            return self._build_fallback_prompt(device_info, edge_info, cloud_info)
+    
+    def _build_fallback_prompt(self, device_info, edge_info, cloud_info):
+        """备用简化提示模板 - 适配简化设备模型"""
+        print("🔄 使用备用简化提示模板")
+        
+        prompt = f"""你是云边端计算卸载专家。系统采用简化设备模型：
 
-环境:
-- 终端设备: {len(device_info)}个，2.0GHz CPU，电池1%
-- 边缘服务器: {len(edge_info)}个，8.0GHz CPU  
-- 云服务器: {len(cloud_info)}个，32.0GHz CPU
+**设备状态（简化版）**:
+- UE设备({len(device_info)}个): CPU频率 + 电池 + 任务负载
+- ES服务器({len(edge_info)}个): CPU频率 + 任务负载
+- CS服务器({len(cloud_info)}个): CPU频率（资源无限）
 
-任务信息:"""
+**当前状态**:
+"""
+        
+        # UE设备状态
+        for i, device in enumerate(device_info):
+            battery_pct = device.get('battery_percentage', 0.5) * 100
+            cpu_freq = device.get('cpu_frequency', 0.8)
+            task_load = device.get('task_load', 0.0)
+            prompt += f"UE{i}: {cpu_freq:.1f}GHz, 电池{battery_pct:.0f}%, 负载{task_load:.1f}s\n"
+        
+        # ES服务器状态  
+        for i, server in enumerate(edge_info):
+            cpu_freq = server.get('cpu_frequency', 8)
+            task_load = server.get('task_load', 0.0)
+            prompt += f"ES{i}: {cpu_freq}GHz, 负载{task_load:.1f}s\n"
+            
+        prompt += f"""
+**通信延迟差异**:
+- 边缘卸载: 低延迟(1Gbps直连)
+- 云端卸载: 高延迟(需要中转)
 
-            for i, state in enumerate(task_states):
-                computation = f"{state[0]:.1f}MI"
-                data_size = f"{state[1]:.1f}MB"
-                deadline = f"{state[2]:.1f}s"
-                prompt += f"\n任务{i}: {computation}, {data_size}, 期限{deadline}"
+**任务分割策略**:
+每个UE设备需要决策: [α1, α2, α3, edge_id]
+- α1: 本地执行比例
+- α2: 边缘执行比例  
+- α3: 云端执行比例
+- edge_id: 目标边缘服务器(0-{len(edge_info)-1})
 
-            prompt += f"""
+要求直接返回JSON格式的策略数组:
 
-规则:
-- offload_ratio: 0=本地执行, 1=完全卸载
-- target_node: 0=本地, 1-{len(edge_info)}=边缘服务器, {len(edge_info)+1}=云服务器
-
-要求: 直接返回JSON数组，无需解释。格式:
-
-[{{"task_id":0,"offload_ratio":0.8,"target_node":1}},{{"task_id":1,"offload_ratio":1.0,"target_node":3}}]
+[
+  {{"device_id": 0, "local_ratio": 0.3, "edge_ratio": 0.5, "cloud_ratio": 0.2, "target_edge": 1}},
+  {{"device_id": 1, "local_ratio": 0.0, "edge_ratio": 0.8, "cloud_ratio": 0.2, "target_edge": 0}}
+]
 
 JSON:"""
-
-            return prompt
+        
+        return prompt
+    
+    def _save_prompt_to_file(self, prompt):
+        """保存提示词到文件"""
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 保存最新的提示词
+            with open("last_prompt.txt", "w", encoding="utf-8") as f:
+                f.write("=" * 60 + "\n")
+                f.write("发送给LLM的提示词内容\n")
+                f.write("=" * 60 + "\n")
+                f.write(prompt)
+                f.write("\n" + "=" * 60 + "\n")
+            
+            # 保存带时间戳的提示词
+            with open(f"prompt_{timestamp}.txt", "w", encoding="utf-8") as f:
+                f.write("=" * 60 + "\n")
+                f.write(f"发送给LLM的提示词内容 - {timestamp}\n")
+                f.write("=" * 60 + "\n")
+                f.write(prompt)
+                f.write("\n" + "=" * 60 + "\n")
+            
+            print(f"✅ 提示词已保存到: last_prompt.txt 和 prompt_{timestamp}.txt")
+        except Exception as e:
+            print(f"⚠️ 保存提示词失败: {e}")
+    
+    def _save_response_to_file(self, response_text, is_mock=False):
+        """保存LLM响应文本到文件"""
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            mode_label = "模拟模式" if is_mock else "LLM服务器"
+            
+            # 保存最新的响应
+            with open("last_response.txt", "w", encoding="utf-8") as f:
+                f.write("=" * 60 + "\n")
+                f.write(f"LLM返回的原始内容 ({mode_label})\n")
+                f.write("=" * 60 + "\n")
+                f.write(response_text)
+                f.write("\n" + "=" * 60 + "\n")
+            
+            # 保存带时间戳的响应
+            with open(f"response_{timestamp}.txt", "w", encoding="utf-8") as f:
+                f.write("=" * 60 + "\n")
+                f.write(f"LLM返回的原始内容 ({mode_label}) - {timestamp}\n")
+                f.write("=" * 60 + "\n")
+                f.write(response_text)
+                f.write("\n" + "=" * 60 + "\n")
+            
+            print(f"✅ LLM响应已保存到: last_response.txt 和 response_{timestamp}.txt")
+        except Exception as e:
+            print(f"⚠️ 保存LLM响应失败: {e}")
+    
+    def _save_raw_response_to_file(self, raw_json):
+        """保存LLM原始JSON响应到文件"""
+        try:
+            import datetime
+            import json
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 保存最新的原始响应
+            with open("last_raw_response.json", "w", encoding="utf-8") as f:
+                json.dump(raw_json, f, ensure_ascii=False, indent=2)
+            
+            # 保存带时间戳的原始响应
+            with open(f"raw_response_{timestamp}.json", "w", encoding="utf-8") as f:
+                json.dump(raw_json, f, ensure_ascii=False, indent=2)
+            
+            print(f"✅ LLM原始响应已保存到: last_raw_response.json 和 raw_response_{timestamp}.json")
+        except Exception as e:
+            print(f"⚠️ 保存LLM原始响应失败: {e}")

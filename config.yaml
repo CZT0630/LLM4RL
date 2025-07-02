@@ -1,14 +1,16 @@
 # config.yaml
-# 云边端三层架构实验配置
-# 基于最新实验设置要求
+# 云边端三层架构实验配置 - 简化设备模型版本
+# UE: CPU频率 + 电池 + 任务负载
+# ES: CPU频率 + 任务负载
+# CS: CPU频率（资源无限）
 
 # 环境配置
 environment:
   name: "cloud_edge_env"
   
-  # 系统架构参数（按实验设置固定）
+  # 系统架构参数（按简化要求调整）
   num_devices: 10       # 端侧设备数量（UE）
-  num_edges: 5          # 边缘服务器数量（ES）  
+  num_edges: 5          # 边缘服务器数量（ES，增加到5个）  
   num_clouds: 1         # 云服务器数量（CS）
 
   # 动作空间配置
@@ -16,40 +18,59 @@ environment:
     type: "continuous"
     dimension: 4       # [α1, α2, α3, edge_id] 
     
-  # 状态空间配置
+  # 状态空间配置（简化版）
   state_space:
     normalize: true
     include_task_info: true
+    # 简化后的状态维度：
+    # UE: 3个特征 × 10设备 = 30
+    # ES: 2个特征 × 5服务器 = 10  
+    # CS: 1个特征 × 1服务器 = 1
+    # 任务: 6个特征 × 10任务 = 60
+    # 总计: 101维
 
-# 设备配置（已在代码中硬编码，此处仅作说明）
+# 设备配置（简化版）
 device_specs:
   user_equipment:
     count: 10
+    # 简化属性：CPU频率 + 电池 + 任务负载
     cpu_frequency_range: [0.5, 1.0]    # GHz，异构配置
-    max_cpu_cycles: 500e6               # 500 Mcycles
     battery_capacity: 4000              # mAh
-    alpha_ue: 1e-26                     # J/cycle
-    transmission_power: 0.5             # W
-    transmission_rate_to_edge: 1e9      # 1 Gbps
+    alpha_ue: 1e-26                     # J/cycle（能耗系数）
+    transmission_power: 0.5             # W（传输功率）
+    
+    # 差异化通信配置
+    transmission_rate_to_edge: 1e9      # 1 Gbps（UE→边缘，6G无线）
+    transmission_rate_to_cloud: 100e6   # 100 Mbps（UE→云端，经边缘中转，总延迟更高）
     
   edge_servers:
     count: 5
+    # 简化属性：CPU频率 + 任务负载
     cpu_frequencies: [5, 6, 8, 10, 12]  # GHz，异构配置
-    memory_capacity: 16                  # GB
-    alpha_es: 3e-26                     # J/cycle
-    transmission_rate_to_cloud: 10e9    # 10 Gbps
+    alpha_es: 3e-26                     # J/cycle（能耗系数）
+    transmission_rate_to_cloud: 10e9    # 10 Gbps（边缘→云端）
     
   cloud_servers:
     count: 1
+    # 简化属性：仅CPU频率（资源无限）
     cpu_frequency: 20                   # GHz
-    memory_capacity: 64                 # GB
-    alpha_cs: 1e-27                    # J/cycle
-    parallel_factor: 4.0               # 并行处理能力
+    alpha_cs: 1e-27                    # J/cycle（极低能耗）
+    parallel_factor: 8.0               # 强大的并行处理能力
 
-# 网络配置
+# 网络配置（差异化通信延迟）
 network:
-  ue_to_edge_rate: 1e9      # 1 Gbps (6G无线链路)
-  edge_to_cloud_rate: 10e9  # 10 Gbps (光纤有线链路)
+  # 边缘通信：快速、低延迟
+  ue_to_edge_rate: 1e9        # 1 Gbps (6G无线，直连)
+  
+  # 云端通信：慢速、高延迟（需要中转）  
+  ue_to_cloud_total_rate: 100e6  # 100 Mbps (UE→边缘→云的总带宽)
+  edge_to_cloud_rate: 10e9    # 10 Gbps (边缘→云端，光纤)
+  
+  # 延迟模型说明：
+  # - 边缘卸载：UE直接传输到边缘，低延迟
+  # - 云端卸载：UE→边缘→云端的两跳传输，高延迟
+  # - 云端资源无限，无等待时间
+  # - 边缘资源有限，存在队列等待
 
 # 任务特性配置  
 tasks:
@@ -58,22 +79,22 @@ tasks:
   # 任务类型定义
   task_types:
     small:
-      data_size_range: [1, 5]      # MB
+      data_range: [1, 5]       # MB
       description: "传感器数据、文本处理"
-      weight: 0.4                  # 40%概率
-      deadline_factor: [2.0, 5.0]  # 本地执行时间的2-5倍
+      probability: 0.4         # 40%概率
+      deadline_multiplier: 2.5 # 本地执行时间的2.5倍
       
     medium:
-      data_size_range: [10, 50]    # MB  
+      data_range: [10, 50]     # MB  
       description: "短视频预处理、轻度图像识别"
-      weight: 0.4                  # 40%概率
-      deadline_factor: [1.5, 3.0]  # 本地执行时间的1.5-3倍
+      probability: 0.4         # 40%概率
+      deadline_multiplier: 2.0 # 本地执行时间的2倍
       
     large:
-      data_size_range: [100, 200]  # MB
+      data_range: [100, 200]   # MB
       description: "高清视频分析、复杂AI推理"
-      weight: 0.2                  # 20%概率
-      deadline_factor: [1.2, 2.0]  # 本地执行时间的1.2-2倍
+      probability: 0.2         # 20%概率
+      deadline_multiplier: 1.5 # 本地执行时间的1.5倍
 
 # MADDPG算法配置
 maddpg:
@@ -104,9 +125,9 @@ maddpg:
 # LLM配置
 llm:
   # LLM服务配置
-  base_url: "http://10.200.1.35:8888/v1"
-  model_name: "qwen2.5-14b-instruct"
-  api_key: "sk-no-key-required"
+  base_url: "http://10.200.1.35:8888/v1/completions"
+  model_name: "qwen3-14b"
+  api_key: ""
   
   # 连接参数
   timeout: 120              # 连接超时时间(秒)
@@ -114,180 +135,62 @@ llm:
   max_retries: 1            # 最大重试次数
   
   # LLM指导参数
-  temperature: 0.7
-  max_tokens: 1024
+  temperature: 0.3
+  max_tokens: 4096          # 最大token数，确保完整响应
   enable_expert_guidance: true
-  guidance_frequency: 10    # 每10步请求一次LLM指导
+  # guidance_frequency: 10    # 每10步请求一次LLM指导
 
-# 原训练配置（已合并到下方新配置中）
-# training_old:
-#   total_episodes: 2000
-#   max_episode_steps: 100
-#   eval_episodes: 10
-#   eval_frequency: 100
-#   save_frequency: 500
-#   model_save_path: "results/models"
-#   log_frequency: 10
-#   tensorboard_log: true
-  
 # 随机种子
 seed: 42
 
-# 实验假设条件
-assumptions:
-  - "网络带宽和计算资源在短时窗口内稳定"
-  - "任务分割后无依赖关系，可按任意比例划分和卸载"  
-  - "边缘服务器和云端的资源分配为无优先级的非抢占式调度"
-  - "采用时分多址(TDMA)技术避免干扰"
-  - "云服务器视为无计算资源瓶颈，支持并行处理"
+# 测试配置
+testing:
+  num_episodes: 2000          # 测试轮数
+  save_results: true        # 保存测试结果
+  detailed_logging: true    # 详细日志
 
-# 设备模型配置
-device_config:
-  # 端侧设备配置
-  user_equipment:
-    cpu_frequency_range: [0.5, 1.0]  # GHz，异构配置
-    max_cpu_cycles: 500e6             # 最大500Mcycles
-    battery_capacity: 4000            # mAh
-    memory_capacity: 2.0              # GB
-    transmission_power: 0.5           # W
-    energy_coefficient: 1e-26         # J/cycle
-    
-  # 边缘服务器配置
-  edge_server:
-    cpu_frequencies: [5, 6, 8, 10, 12]  # GHz，异构配置
-    memory_capacity: 16.0                # GB
-    energy_coefficient: 3e-26            # J/cycle
-    ue_to_es_bandwidth: 1e9              # 1Gbps
-    
-  # 云服务器配置  
-  cloud_server:
-    cpu_frequency: 20.0               # GHz
-    memory_capacity: 64.0             # GB
-    parallel_capability: 4            # 并行处理能力
-    energy_coefficient: 1e-27         # J/cycle
-    es_to_cs_bandwidth: 10e9          # 10Gbps
-
-# 任务生成配置
-task_config:
-  # 任务类型配置
-  task_types:
-    small:
-      data_range: [1, 5]           # MB
-      probability: 0.4
-    medium:
-      data_range: [10, 50]         # MB
-      probability: 0.4
-    large:
-      data_range: [100, 200]       # MB
-      probability: 0.2
-      
-  # 任务属性配置
-  processing_density: 0.2e9        # 0.2 Gcycles/MB
-  deadline_multiplier: 2.0         # 截止时间乘数
-  arrival_pattern: "poisson"       # 到达模式
-  
 # 训练配置
 training:
-  # 基本训练参数
-  episodes: 1000                   # 训练Episodes数
-  max_steps_per_episode: 100       # 每Episode最大步数
-  train_start_episode: 50          # 开始训练的Episode
-  
-  # 网络参数
-  lr_actor: 0.001                  # Actor学习率
-  lr_critic: 0.001                 # Critic学习率
-  gamma: 0.99                      # 折扣因子
-  tau: 0.01                        # 软更新系数
-  
-  # 经验回放
-  buffer_size: 100000              # 缓冲区大小
-  batch_size: 64                   # 批大小
-  
-  # LLM知识蒸馏
-  llm_distill_weight: 0.1          # LLM知识蒸馏损失权重
-  llm_consult_frequency: 1         # LLM咨询频率（每几个step咨询一次）
-  
-  # 探索策略
-  noise_decay: 0.995               # 噪声衰减
-  min_noise: 0.01                  # 最小噪声
-  
-  # 保存设置
-  save_frequency: 200              # 模型保存频率
-  log_frequency: 50                # 日志打印频率
+  episodes: 1000           # 完整训练轮数
+  max_steps_per_episode: 200  # 每轮最大步数
+  save_frequency: 100      # 模型保存频率
+  log_frequency: 10        # 日志输出频率
 
-# LLM配置
-llm_config:
-  # 模型配置
-  provider: "openai"               # LLM提供商
-  model: "gpt-3.5-turbo"          # 模型名称
-  api_key: "your-api-key-here"     # API密钥
-  base_url: null                   # 自定义API地址
+# 奖励函数配置
+reward:
+  # 奖励权重
+  latency_weight: 10.0      # 时延改善奖励权重
+  energy_weight: 5.0        # 能耗改善奖励权重
+  deadline_weight: 5.0      # 截止时间满足奖励权重
+  balance_weight: 0.01      # 负载均衡奖励权重
   
-  # 生成参数
-  temperature: 0.7                 # 生成温度
-  max_tokens: 1000                 # 最大token数
-  timeout: 30                      # 超时时间（秒）
-  
-  # 重试配置
-  max_retries: 3                   # 最大重试次数
-  retry_delay: 1                   # 重试延迟（秒）
-  
-  # 提示配置
-  system_prompt: |
-    您是一个云边端计算卸载决策专家。
-    请根据设备状态、任务特征和网络条件，
-    为每个任务提供最优的三元分割卸载策略。
-  
-  decision_format: |
-    对于每个任务，请返回决策格式：
-    {
-      "task_id": 任务ID,
-      "local_ratio": 本地处理比例(0-1),
-      "edge_ratio": 边缘处理比例(0-1), 
-      "cloud_ratio": 云端处理比例(0-1),
-      "edge_server_id": 边缘服务器ID(0-4),
-      "reasoning": "决策理由"
-    }
+  # 惩罚配置
+  overtime_penalty: 10.0    # 超时惩罚权重
+  communication_penalty: 0.1 # 过度通信惩罚（鼓励减少不必要的云端卸载）
 
-# 评估配置
-evaluation:
-  test_episodes: 100               # 测试Episodes数
-  metrics:
-    - "latency"                    # 时延
-    - "energy"                     # 能耗
-    - "reward"                     # 奖励
-    - "success_rate"               # 成功率
-    - "resource_utilization"       # 资源利用率
-  
-  baseline_methods:
-    - "local_only"                 # 纯本地执行
-    - "random_offload"             # 随机卸载
-    - "greedy_offload"             # 贪婪卸载
-    - "traditional_maddpg"         # 传统MADDPG
+# 简化设计原则
+design_principles:
+  - "边缘场景的时延敏感性：队列等待时间比资源利用率更重要"
+  - "CPU频率是设备计算能力的最直接指标"
+  - "电池约束是移动设备的根本限制"
+  - "任务负载 = 当前执行剩余时间 + 队列中所有任务处理时间"
+  - "云服务器资源无限，无任务负载概念"
+  - "差异化通信延迟：边缘快速、云端慢速，平衡计算卸载选择"
 
-# 结果保存配置
-results:
-  base_dir: "results"              # 结果基础目录
-  subdirs:
-    models: "models"               # 模型保存目录
-    logs: "logs"                   # 日志目录
-    plots: "plots"                 # 图像目录
-    data: "data"                   # 数据目录
-  
-  # 文件格式
-  model_format: "pytorch"          # 模型格式
-  data_format: "json"              # 数据格式
-  plot_format: "png"               # 图像格式
+# 实验假设条件（更新）
+assumptions:
+  - "网络带宽在短时窗口内稳定，但边缘和云端通信存在显著延迟差异"
+  - "任务分割后无依赖关系，可按任意比例划分和卸载"  
+  - "边缘服务器资源有限，存在队列等待；云服务器资源无限"
+  - "采用时分多址(TDMA)技术避免干扰"
+  - "UE电池容量有限，需要考虑能耗约束"
+  - "云端卸载经边缘服务器中转，总通信延迟更高"
 
-# 调试配置
-debug:
-  enabled: false                   # 是否启用调试模式
-  log_level: "INFO"                # 日志级别
-  save_trajectories: false        # 是否保存轨迹
-  render_environment: false       # 是否渲染环境
-  
-# 并行配置
-parallel:
-  enabled: false                   # 是否启用并行训练
-  num_workers: 4                   # 工作进程数
-  device: "auto"                   # 设备选择（auto/cpu/cuda）
+# 性能指标
+metrics:
+  - "平均任务完成时延"
+  - "总能耗消耗"
+  - "截止时间满足率"
+  - "边缘服务器负载均衡度"
+  - "通信效率（边缘vs云端卸载比例）"
+  - "设备电池消耗率"

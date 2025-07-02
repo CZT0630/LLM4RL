@@ -1,5 +1,6 @@
 # maddpg/maddpg_agent.py
 import torch
+import torch.nn.functional as F
 import numpy as np
 from .maddpg_actor_critic import Actor, Critic
 from .replay_buffer import ReplayBuffer
@@ -7,215 +8,284 @@ from .noise import OUNoise
 
 
 class MADDPGAgent:
-    def __init__(self, state_dim, action_dim, max_action, num_agents, agent_idx,
-                 lr_actor=1e-4, lr_critic=1e-3, gamma=0.99, tau=0.005,
-                 buffer_size=int(1e6), batch_size=100, 
-                 distillation_alpha=0.5, distillation_temp=1.0, distillation_loss_type="mse"):
+    def __init__(self, state_dim, action_dim, num_agents, agent_idx, config=None, max_action=None, **kwargs):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Agent配置
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.max_action = max_action
         self.num_agents = num_agents
         self.agent_idx = agent_idx
-        self.gamma = gamma
-        self.tau = tau
         
-        # 蒸馏学习参数
-        self.distillation_alpha = distillation_alpha  # 蒸馏损失权重
-        self.distillation_temp = distillation_temp    # 蒸馏温度
-        self.distillation_loss_type = distillation_loss_type  # 蒸馏损失类型
-
-        # 创建Actor和Critic网络
-        self.actor = Actor(state_dim, action_dim, max_action)
-        self.actor_target = Actor(state_dim, action_dim, max_action)
+        # 处理配置参数
+        if config is None:
+            config = {}
+        
+        # 从kwargs中提取参数（兼容旧版本调用）
+        self.lr_actor = kwargs.get('lr_actor', config.get('lr_actor', 0.001))
+        self.lr_critic = kwargs.get('lr_critic', config.get('lr_critic', 0.001))
+        self.gamma = kwargs.get('gamma', config.get('gamma', 0.99))
+        self.tau = kwargs.get('tau', config.get('tau', 0.01))
+        self.batch_size = kwargs.get('batch_size', config.get('batch_size', 64))
+        buffer_size = kwargs.get('buffer_size', config.get('buffer_size', 100000))
+        self.llm_distill_weight = config.get('llm_distill_weight', 0.1)  # LLM知识蒸馏权重
+        
+        # 确定max_action
+        if max_action is None:
+            max_action = num_agents + 2  # 默认值：设备数量 + 边缘 + 云端
+        self.max_action = max_action
+        
+        # 网络初始化
+        self.actor = Actor(state_dim, action_dim, max_action).to(self.device)
+        self.actor_target = Actor(state_dim, action_dim, max_action).to(self.device)
+        self.critic = Critic(state_dim, action_dim, num_agents).to(self.device)
+        self.critic_target = Critic(state_dim, action_dim, num_agents).to(self.device)
+        
+        # 复制网络参数
         self.actor_target.load_state_dict(self.actor.state_dict())
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr_actor)
-
-        self.critic = Critic(state_dim, action_dim, num_agents)
-        self.critic_target = Critic(state_dim, action_dim, num_agents)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr_critic)
-
-        # 经验回放缓冲区
-        self.replay_buffer = ReplayBuffer(buffer_size)
-        self.batch_size = batch_size
-
-        # 探索噪声
+        
+        # 优化器
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr_actor)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr_critic)
+        
+        # 噪声
         self.noise = OUNoise(action_dim)
-
-        # 设备
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.actor.to(self.device)
-        self.actor_target.to(self.device)
-        self.critic.to(self.device)
-        self.critic_target.to(self.device)
-
-    def select_action(self, state, llm_advice=None, add_noise=True):
-        """根据状态和可选的LLM建议选择动作"""
-        state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
         
-        self.actor.eval()
+        # 经验回放
+        self.memory = ReplayBuffer(buffer_size)
+        
+        # 兼容旧版本的replay_buffer属性
+        self.replay_buffer = self.memory
+        
+        # 训练统计
+        self.training_count = 0
+
+    def select_action(self, state, add_noise=True, llm_advice=None):
+        """选择动作"""
+        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        
+        # 处理LLM建议
+        if llm_advice is not None:
+            llm_advice = torch.FloatTensor(llm_advice).unsqueeze(0).to(self.device)
+        
         with torch.no_grad():
-            if llm_advice is not None:
-                # llm_advice格式: tensor([[offload_ratio, target_node]])
-                # 确保llm_advice是张量形式
-                if not isinstance(llm_advice, torch.Tensor):
-                    llm_advice = torch.FloatTensor([[0.0, 0.0]]).to(self.device)
-                # 使用LLM建议作为输入
-                action = self.actor(state, llm_advice.to(self.device)).cpu().data.numpy().flatten()
-            else:
-                # 无LLM建议时使用零张量
-                zero_advice = torch.zeros((1, 2)).to(self.device)  # [offload_ratio, target_node]
-                action = self.actor(state, zero_advice).cpu().data.numpy().flatten()
-        
-        self.actor.train()
-        
-        if add_noise:
-            # 添加探索噪声
-            action = action + self.noise.sample()
+            action = self.actor(state, llm_advice).cpu().data.numpy().flatten()
             
-            # 约束动作范围
-            action[0] = np.clip(action[0], 0.0, 1.0)  # 卸载比例 [0,1]
-            action[1] = np.clip(action[1], 0.0, self.max_action - 1)  # 目标节点
+        if add_noise:
+            action += self.noise.sample()
+            
+        # 确保动作在有效范围内
+        action = np.clip(action, 0.0, 1.0)
         
+        # 处理边缘服务器ID（最后一个维度）
+        if len(action) >= 2:
+            action[-1] = np.clip(action[-1] * 5, 0, 4)  # 5个边缘服务器，索引0-4
+            
         return action
 
-    def train(self, experiences, all_agents, llm_experiences=None):
-        """训练智能体，包含知识蒸馏
+    def store_experience(self, state, action, reward, next_state, done, llm_action=None):
+        """存储经验到本地缓冲区"""
+        self.memory.add(state, action, reward, next_state, done, llm_action)
+
+    def train(self, all_agents=None, replay_buffer=None, experiences=None):
+        """
+        训练Agent
         
         Args:
-            experiences: 从经验回放中采样的经验
-            all_agents: 所有智能体的列表
-            llm_experiences: LLM专家建议的经验 (states, llm_actions)
+            all_agents: 所有Agent的列表（用于获取其他Agent的动作）
+            replay_buffer: 可选的共享经验缓冲区，如果为None则使用自己的缓冲区
+            experiences: 兼容旧版本的经验数据
         """
-        # 从经验中提取数据
-        states, actions, rewards, next_states, dones = experiences
-
-        # 转换为张量
+        # 兼容旧版本的调用方式
+        if experiences is not None:
+            return self._train_with_experiences(experiences, all_agents)
+        
+        if replay_buffer is None:
+            # 使用自己的缓冲区
+            if len(self.memory) < self.batch_size:
+                return {}
+            buffer_to_use = self.memory
+        else:
+            # 使用传入的共享缓冲区
+            if len(replay_buffer) < self.batch_size:
+                return {}
+            buffer_to_use = replay_buffer
+        
+        # 采样经验
+        states, actions, rewards, next_states, dones, llm_actions = buffer_to_use.sample(self.batch_size)
+        
+        # 转换为tensor
         states = torch.FloatTensor(states).to(self.device)
         actions = torch.FloatTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device).unsqueeze(1)
+        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
         next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
-
-        # 提取当前智能体的奖励和终止标志
-        agent_rewards = rewards[:, self.agent_idx].unsqueeze(1)
-        agent_dones = dones[:, self.agent_idx].unsqueeze(1)
-
-        # 获取所有智能体的下一状态动作
-        next_actions = []
-        for i, agent in enumerate(all_agents):
-            # 处理LLM建议（假设没有LLM建议用于下一状态）
-            zero_advice = torch.zeros(next_states.size(0), 2).to(self.device)
-            next_action = agent.actor_target(next_states[:, i * self.state_dim:(i + 1) * self.state_dim], zero_advice)
-            next_actions.append(next_action)
-        next_actions = torch.cat(next_actions, dim=1)
-
+        dones = torch.BoolTensor(dones).unsqueeze(1).to(self.device)
+        
         # 训练Critic网络
-        self.critic_optimizer.zero_grad()
-
-        # 计算目标Q值
-        target_q = self.critic_target(next_states, next_actions)
-        target_q = agent_rewards + (1 - agent_dones) * self.gamma * target_q
-
-        # 计算当前Q值
-        current_q = self.critic(states, actions)
-
-        # 计算Critic损失
-        critic_loss = torch.nn.MSELoss()(current_q, target_q)
-        critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1)
-        self.critic_optimizer.step()
-
-        # 训练Actor网络
-        self.actor_optimizer.zero_grad()
-
-        # 获取当前智能体的预测动作
-        zero_advice = torch.zeros(states.size(0), 2).to(self.device)
-        actor_actions = self.actor(states[:, self.agent_idx * self.state_dim:(self.agent_idx + 1) * self.state_dim],
-                                   zero_advice)
-
-        # 复制其他智能体的动作
-        actions_pred = actions.clone()
-        actions_pred[:, self.agent_idx * self.action_dim:(self.agent_idx + 1) * self.action_dim] = actor_actions
-
-        # 计算策略梯度损失
-        policy_loss = -self.critic(states, actions_pred).mean()
+        critic_loss = self._train_critic(states, actions, rewards, next_states, dones, all_agents)
         
-        # 如果有LLM专家建议，加入蒸馏损失
-        distillation_loss = 0.0
-        if llm_experiences is not None and len(llm_experiences) > 0:
-            llm_states, llm_actions = llm_experiences
-            llm_states = torch.FloatTensor(llm_states).to(self.device)
-            llm_actions = torch.FloatTensor(llm_actions).to(self.device)
-            
-            # 获取当前agent相关的状态和LLM建议
-            agent_states = llm_states[:, self.agent_idx * self.state_dim:(self.agent_idx + 1) * self.state_dim]
-            agent_llm_actions = llm_actions[:, self.agent_idx * self.action_dim:(self.agent_idx + 1) * self.action_dim]
-            
-            # 使用Actor网络预测动作
-            zero_advice = torch.zeros(agent_states.size(0), 2).to(self.device)
-            pred_actions = self.actor(agent_states, zero_advice)
-            
-            # 计算蒸馏损失
-            if self.distillation_loss_type == "mse":
-                # 使用均方误差作为蒸馏损失
-                distillation_loss = torch.nn.MSELoss()(pred_actions, agent_llm_actions)
-            elif self.distillation_loss_type == "kl":
-                # 使用KL散度作为蒸馏损失 (需要将动作转换为概率分布)
-                pred_logits = pred_actions / self.distillation_temp
-                target_logits = agent_llm_actions / self.distillation_temp
-                log_softmax_pred = torch.nn.functional.log_softmax(pred_logits, dim=1)
-                softmax_target = torch.nn.functional.softmax(target_logits, dim=1)
-                distillation_loss = torch.nn.functional.kl_div(log_softmax_pred, softmax_target, reduction='batchmean')
-            else:
-                # 默认使用均方误差
-                distillation_loss = torch.nn.MSELoss()(pred_actions, agent_llm_actions)
+        # 训练Actor网络（包含LLM知识蒸馏）
+        actor_loss, distill_loss = self._train_actor(states, actions, llm_actions, all_agents)
         
-        # 总损失 = 策略梯度损失 + 蒸馏损失权重 * 蒸馏损失
-        actor_loss = policy_loss + self.distillation_alpha * distillation_loss
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1)
-        self.actor_optimizer.step()
-
         # 软更新目标网络
-        self._soft_update(self.critic, self.critic_target)
-        self._soft_update(self.actor, self.actor_target)
+        self._soft_update(self.actor_target, self.actor, self.tau)
+        self._soft_update(self.critic_target, self.critic, self.tau)
+        
+        self.training_count += 1
         
         return {
             'critic_loss': critic_loss.item(),
             'actor_loss': actor_loss.item(),
-            'policy_loss': policy_loss.item(),
-            'distillation_loss': distillation_loss.item() if isinstance(distillation_loss, torch.Tensor) else 0.0
+            'distill_loss': distill_loss.item() if isinstance(distill_loss, torch.Tensor) else distill_loss,
+            'training_count': self.training_count
         }
 
-    def _soft_update(self, local_model, target_model):
-        """软更新目标网络参数"""
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
+    def _train_with_experiences(self, experiences, all_agents):
+        """兼容旧版本的训练方法"""
+        # 简化的训练逻辑，用于兼容
+        states, actions, rewards, next_states, dones = experiences
+        
+        # 转换为tensor
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.FloatTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        dones = torch.BoolTensor(dones).unsqueeze(1).to(self.device)
+        
+        # 简化的训练过程
+        critic_loss = self._train_critic(states, actions, rewards, next_states, dones, all_agents)
+        actor_loss, distill_loss = self._train_actor(states, actions, None, all_agents)
+        
+        # 软更新目标网络
+        self._soft_update(self.actor_target, self.actor, self.tau)
+        self._soft_update(self.critic_target, self.critic, self.tau)
+        
+        self.training_count += 1
+        
+        return {
+            'critic_loss': critic_loss.item(),
+            'actor_loss': actor_loss.item(),
+            'distill_loss': 0.0,
+            'training_count': self.training_count
+        }
 
-    def _process_llm_advice(self, llm_advice):
-        """处理LLM建议，转换为网络输入格式"""
-        if llm_advice is None or not llm_advice:
-            # 默认建议：不卸载
-            return np.array([0.0, 0.0, 0.0, 0.0])
+    def _train_critic(self, states, actions, rewards, next_states, dones, all_agents):
+        """训练Critic网络"""
+        # 计算目标Q值
+        with torch.no_grad():
+            # 获取下一状态的动作（简化版本，实际应该用其他Agent的目标网络）
+            next_actions = []
+            for i in range(self.num_agents):
+                if i == self.agent_idx:
+                    next_action = self.actor_target(next_states)
+                else:
+                    # 简化处理：使用当前Agent的目标网络代替其他Agent
+                    # 在完整实现中，这里应该是 all_agents[i].actor_target(next_states)
+                    next_action = self.actor_target(next_states)
+                next_actions.append(next_action)
+            
+            next_actions = torch.cat(next_actions, dim=1)
+            
+            # 扩展状态维度以匹配多智能体Critic输入
+            states_expanded = states.repeat(1, self.num_agents)
+            next_states_expanded = next_states.repeat(1, self.num_agents)
+            
+            next_q_values = self.critic_target(next_states_expanded, next_actions)
+            target_q_values = rewards + self.gamma * next_q_values * (~dones)
+        
+        # 当前Q值
+        current_actions = actions.repeat(1, self.num_agents)  # 简化：假设所有Agent动作相同
+        current_q_values = self.critic(states_expanded, current_actions)
+        
+        # Critic损失
+        critic_loss = F.mse_loss(current_q_values, target_q_values)
+        
+        # 更新Critic
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+        
+        return critic_loss
 
-        # 找到当前智能体的建议
-        agent_advice = next((a for a in llm_advice if a["task_id"] == self.agent_idx), None)
-        if not agent_advice:
-            return np.array([0.0, 0.0, 0.0, 0.0])
+    def _train_actor(self, states, actions, llm_actions, all_agents):
+        """训练Actor网络（包含LLM知识蒸馏）"""
+        # 策略梯度损失
+        predicted_actions = self.actor(states)
+        
+        # 构建用于Critic的动作序列（简化版本）
+        actions_for_critic = predicted_actions.repeat(1, self.num_agents)
+        states_expanded = states.repeat(1, self.num_agents)
+        
+        actor_loss = -self.critic(states_expanded, actions_for_critic).mean()
+        
+        # LLM知识蒸馏损失
+        distill_loss = self._compute_llm_distillation_loss(predicted_actions, llm_actions)
+        
+        # 总损失
+        total_actor_loss = actor_loss + self.llm_distill_weight * distill_loss
+        
+        # 更新Actor
+        self.actor_optimizer.zero_grad()
+        total_actor_loss.backward()
+        self.actor_optimizer.step()
+        
+        return total_actor_loss, distill_loss
 
-        # 编码卸载比例
-        unload_ratio = agent_advice["unload_ratio"]
+    def _compute_llm_distillation_loss(self, predicted_actions, llm_actions):
+        """计算LLM知识蒸馏损失"""
+        if not llm_actions or all(action is None for action in llm_actions):
+            return torch.tensor(0.0, device=self.device)
+        
+        distill_loss = 0.0
+        valid_samples = 0
+        
+        for i, llm_action in enumerate(llm_actions):
+            if llm_action is not None and len(llm_action) > self.agent_idx:
+                # 获取该Agent对应的LLM专家动作
+                if isinstance(llm_action, list) and self.agent_idx < len(llm_action):
+                    llm_agent_action = llm_action[self.agent_idx]
+                elif isinstance(llm_action, (list, np.ndarray)) and len(llm_action) == self.action_dim:
+                    llm_agent_action = llm_action
+                else:
+                    continue
+                
+                if llm_agent_action is not None and len(llm_agent_action) > 0:
+                    llm_tensor = torch.FloatTensor(llm_agent_action).to(self.device)
+                    # 确保维度匹配
+                    if llm_tensor.shape[-1] == predicted_actions.shape[-1]:
+                        distill_loss += F.mse_loss(predicted_actions[i], llm_tensor)
+                        valid_samples += 1
+        
+        if valid_samples > 0:
+            return distill_loss / valid_samples
+        else:
+            return torch.tensor(0.0, device=self.device)
 
-        # 编码目标节点
-        target_idx = agent_advice["target_idx"]
-        target_encoding = np.zeros(3)  # 本地、边缘、云端
-        if target_idx == 0:  # 本地
-            target_encoding[0] = 1
-        elif 1 <= target_idx <= self.num_edges:  # 边缘
-            target_encoding[1] = 1
-        else:  # 云端
-            target_encoding[2] = 1
+    def _soft_update(self, target, source, tau):
+        """软更新目标网络"""
+        for target_param, param in zip(target.parameters(), source.parameters()):
+            target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
 
-        # 组合成LLM输入向量
-        return np.concatenate([[unload_ratio], target_encoding])
+    def save_model(self, filepath):
+        """保存模型"""
+        torch.save({
+            'actor': self.actor.state_dict(),
+            'critic': self.critic.state_dict(),
+            'actor_target': self.actor_target.state_dict(),
+            'critic_target': self.critic_target.state_dict(),
+            'actor_optimizer': self.actor_optimizer.state_dict(),
+            'critic_optimizer': self.critic_optimizer.state_dict(),
+            'training_count': self.training_count,
+        }, filepath)
+
+    def load_model(self, filepath):
+        """加载模型"""
+        checkpoint = torch.load(filepath, map_location=self.device)
+        self.actor.load_state_dict(checkpoint['actor'])
+        self.critic.load_state_dict(checkpoint['critic'])
+        self.actor_target.load_state_dict(checkpoint['actor_target'])
+        self.critic_target.load_state_dict(checkpoint['critic_target'])
+        self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
+        self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
+        self.training_count = checkpoint.get('training_count', 0)

@@ -70,3 +70,143 @@ class MetricsTracker:
             'avg_critic_loss': avg_critic,
             'avg_actor_loss': avg_actor
         }
+
+
+def calculate_episode_metrics(rewards, info):
+    """计算单个episode的指标
+    
+    Args:
+        rewards: 奖励列表
+        info: 环境返回的信息字典，包含delays, energies, utilizations等
+    
+    Returns:
+        dict: 包含计算后的指标
+    """
+    total_reward = sum(rewards) if rewards else 0
+    avg_reward = total_reward / len(rewards) if rewards else 0
+    
+    # 从info中提取指标
+    delays = info.get('delays', [])
+    energies = info.get('energies', [])
+    utilizations = info.get('utilizations', [])
+    
+    avg_delay = sum(delays) / len(delays) if delays else 0
+    total_energy = sum(energies) if energies else 0
+    avg_energy = total_energy / len(energies) if energies else 0
+    avg_utilization = sum(utilizations) / len(utilizations) if utilizations else 0
+    
+    # 从任务完成率统计中提取指标
+    completion_stats = info.get('task_completion_stats', {})
+    completion_rate = completion_stats.get('on_time_completion_rate', 1.0)
+    overall_completion_rate = completion_stats.get('overall_completion_rate', 1.0)
+    timeout_rate = completion_stats.get('timeout_rate', 0.0)
+    failure_rate = completion_stats.get('failure_rate', 0.0)
+    avg_overtime = completion_stats.get('avg_overtime', 0.0)
+    
+    return {
+        'total_reward': total_reward,
+        'avg_reward': avg_reward,
+        'total_energy': total_energy,
+        'avg_energy': avg_energy,
+        'avg_delay': avg_delay,
+        'avg_utilization': avg_utilization,
+        'on_time_completion_rate': completion_rate,              # 按时完成率
+        'overall_completion_rate': overall_completion_rate,      # 总完成率
+        'timeout_rate': timeout_rate,                            # 超时率
+        'failure_rate': failure_rate,                            # 失败率
+        'avg_overtime': avg_overtime,                            # 平均超时时间
+        'num_steps': len(rewards)
+    }
+
+def calculate_completion_rate_statistics(completion_stats_list):
+    """
+    计算任务完成率的统计信息
+    
+    Args:
+        completion_stats_list: 每个episode的任务完成率统计列表
+    
+    Returns:
+        dict: 完成率统计摘要
+    """
+    if not completion_stats_list:
+        return {}
+    
+    # 提取各项指标
+    on_time_rates = [stats.get('on_time_completion_rate', 0) for stats in completion_stats_list]
+    overall_rates = [stats.get('overall_completion_rate', 0) for stats in completion_stats_list]
+    timeout_rates = [stats.get('timeout_rate', 0) for stats in completion_stats_list]
+    failure_rates = [stats.get('failure_rate', 0) for stats in completion_stats_list]
+    overtimes = [stats.get('avg_overtime', 0) for stats in completion_stats_list]
+    
+    # 计算统计指标
+    import numpy as np
+    
+    return {
+        'avg_on_time_completion_rate': np.mean(on_time_rates),
+        'std_on_time_completion_rate': np.std(on_time_rates),
+        'min_on_time_completion_rate': np.min(on_time_rates),
+        'max_on_time_completion_rate': np.max(on_time_rates),
+        
+        'avg_overall_completion_rate': np.mean(overall_rates),
+        'std_overall_completion_rate': np.std(overall_rates),
+        
+        'avg_timeout_rate': np.mean(timeout_rates),
+        'std_timeout_rate': np.std(timeout_rates),
+        
+        'avg_failure_rate': np.mean(failure_rates),
+        'std_failure_rate': np.std(failure_rates),
+        
+        'avg_overtime': np.mean([t for t in overtimes if t > 0]),  # 只计算有超时的情况
+        'std_overtime': np.std([t for t in overtimes if t > 0]) if any(t > 0 for t in overtimes) else 0,
+        
+        'total_episodes': len(completion_stats_list)
+    }
+
+def analyze_deadline_violations(violation_records):
+    """
+    分析截止时间违反情况
+    
+    Args:
+        violation_records: 截止时间违反记录列表
+    
+    Returns:
+        dict: 违反情况分析
+    """
+    if not violation_records:
+        return {
+            'total_violations': 0,
+            'violation_analysis': {}
+        }
+    
+    import numpy as np
+    from collections import defaultdict
+    
+    # 按任务类型分组分析
+    violations_by_type = defaultdict(list)
+    for record in violation_records:
+        task_type = record.get('task_type', 'unknown')
+        overtime = record.get('overtime', 0)
+        violations_by_type[task_type].append(overtime)
+    
+    # 分析结果
+    analysis = {}
+    for task_type, overtimes in violations_by_type.items():
+        analysis[task_type] = {
+            'count': len(overtimes),
+            'avg_overtime': np.mean(overtimes),
+            'max_overtime': np.max(overtimes),
+            'min_overtime': np.min(overtimes),
+            'std_overtime': np.std(overtimes)
+        }
+    
+    # 整体统计
+    all_overtimes = [record.get('overtime', 0) for record in violation_records]
+    
+    return {
+        'total_violations': len(violation_records),
+        'avg_overtime': np.mean(all_overtimes),
+        'max_overtime': np.max(all_overtimes),
+        'min_overtime': np.min(all_overtimes),
+        'std_overtime': np.std(all_overtimes),
+        'violation_by_type': analysis
+    }

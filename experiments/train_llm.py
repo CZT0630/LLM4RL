@@ -58,9 +58,9 @@ def train_llm(config=None):
         episode_energy = 0
         for step in range(max_steps):
             # 获取LLM策略并执行
-            device_info = [{"cpu": d.cpu_capacity, "memory": d.memory_capacity} for d in env.devices]
-            edge_info = [{"cpu": e.cpu_capacity, "memory": e.memory_capacity} for e in env.edge_servers]
-            cloud_info = [{"cpu": c.cpu_capacity, "memory": c.memory_capacity} for c in env.cloud_servers]
+            device_info = [{"cpu": d.cpu_frequency} for d in env.devices]
+            edge_info = [{"cpu": e.cpu_frequency} for e in env.edge_servers]
+            cloud_info = [{"cpu": c.cpu_frequency} for c in env.cloud_servers]
             llm_strategies = llm_client.get_unload_strategy(state, device_info, edge_info, cloud_info)
             
             # 解析LLM响应

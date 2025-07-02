@@ -32,10 +32,17 @@ def train_maddpg(config=None):
     env = CloudEdgeDeviceEnv(config['environment'])
 
     # 创建MADDPG智能体
-    state_dim = env.observation_space.shape[0]
+    # 使用正确的单个Agent状态维度
+    state_dim = env.get_agent_state_dim()  # 20维：3(自己UE) + 10(所有ES) + 1(CS) + 6(自己任务)
     action_dim = env.action_space.shape[0]
     max_action = env.action_space.high[1] + 1  # 目标节点数量
     num_agents = env.num_devices
+
+    print(f"🔧 [MADDPG] Agent配置信息:")
+    print(f"  单个Agent状态维度: {state_dim}")
+    print(f"  全局状态维度: {env.observation_space.shape[0]}")
+    print(f"  动作维度: {action_dim}")
+    print(f"  设备数量: {num_agents}")
 
     agents = []
     for i in range(num_agents):
@@ -70,15 +77,25 @@ def train_maddpg(config=None):
         episode_delay = 0
         episode_energy = 0
         for step in range(max_steps):
-            # 选择动作（不使用LLM建议）
-            actions = [agent.select_action(state, llm_advice=None) for agent in agents]
+            # 选择动作（使用正确的Agent状态提取）
+            actions = []
+            for i, agent in enumerate(agents):
+                agent_state = env.extract_agent_state(state, i)
+                action = agent.select_action(agent_state, llm_advice=None)
+                actions.append(action)
+            
             all_actions.append(actions)
+            
             # 执行动作
             next_state, rewards, terminated, truncated, _ = env.step(actions)
             done = terminated or truncated
-            # 存储经验
+            
+            # 存储经验（使用正确的状态提取）
             for i, agent in enumerate(agents):
-                agent.replay_buffer.add(state, actions, rewards, next_state, done)
+                agent_state = env.extract_agent_state(state, i)
+                agent_next_state = env.extract_agent_state(next_state, i)
+                agent.replay_buffer.add(agent_state, actions, rewards, agent_next_state, done)
+            
             # 训练智能体
             if len(agents[0].replay_buffer) > config['maddpg']['batch_size']:
                 experiences = agents[0].replay_buffer.sample(config['maddpg']['batch_size'])

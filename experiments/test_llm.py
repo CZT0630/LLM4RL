@@ -32,9 +32,9 @@ def test_llm(model_path, config=None):
         episode_util = 0
         step_count = 0
         for step in range(max_steps):
-            device_info = [{"cpu": d.cpu_capacity, "memory": d.memory_capacity} for d in env.devices]
-            edge_info = [{"cpu": e.cpu_capacity, "memory": e.memory_capacity} for e in env.edge_servers]
-            cloud_info = [{"cpu": c.cpu_capacity, "memory": c.memory_capacity} for c in env.cloud_servers]
+            device_info = [{"cpu": d.cpu_frequency} for d in env.devices]
+            edge_info = [{"cpu": e.cpu_frequency} for e in env.edge_servers]
+            cloud_info = [{"cpu": c.cpu_frequency} for c in env.cloud_servers]
             # 获取LLM策略并执行
             llm_strategies = llm_client.get_unload_strategy(state, device_info, edge_info, cloud_info)
             
@@ -74,4 +74,4 @@ def test_llm(model_path, config=None):
         all_episode_util.append(avg_util)
         print(f"[LLM] Episode {episode + 1} 平均能耗: {avg_energy:.4f}, 平均资源利用率: {avg_util:.4f}, 平均任务时延: {avg_delay:.4f}")
     print("[LLM] 测试完成!")
-    return all_episode_energy, all_episode_util, all_episode_delay
+    return all_episode_energy, all_episode_util, all_episode_delay 

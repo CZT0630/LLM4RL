@@ -41,10 +41,17 @@ def test_llm_maddpg(model_path, config=None):
     )
 
     # 创建MADDPG智能体
-    state_dim = env.observation_space.shape[0]
+    # 使用正确的单个Agent状态维度  
+    state_dim = env.get_agent_state_dim()  # 20维：3(自己UE) + 10(所有ES) + 1(CS) + 6(自己任务)
     action_dim = env.action_space.shape[0]
     max_action = env.action_space.high[1] + 1  # 目标节点数量
     num_agents = env.num_devices
+
+    print(f"🔧 测试Agent配置信息:")
+    print(f"  单个Agent状态维度: {state_dim}")
+    print(f"  全局状态维度: {env.observation_space.shape[0]}")
+    print(f"  动作维度: {action_dim}")
+    print(f"  设备数量: {num_agents}")
 
     agents = []
     for i in range(num_agents):
@@ -71,9 +78,9 @@ def test_llm_maddpg(model_path, config=None):
         agents.append(agent)
 
     # 设备、边缘和云端详细信息
-    device_info = [{"cpu": device.cpu_capacity, "memory": device.memory_capacity} for device in env.devices]
-    edge_info = [{"cpu": edge.cpu_capacity, "memory": edge.memory_capacity} for edge in env.edge_servers]
-    cloud_info = [{"cpu": cloud.cpu_capacity, "memory": cloud.memory_capacity} for cloud in env.cloud_servers]
+    device_info = [{"cpu": device.cpu_frequency} for device in env.devices]
+    edge_info = [{"cpu": edge.cpu_frequency} for edge in env.edge_servers]
+    cloud_info = [{"cpu": cloud.cpu_frequency} for cloud in env.cloud_servers]
 
     # 测试参数
     num_episodes = config['testing']['num_episodes']
@@ -108,7 +115,10 @@ def test_llm_maddpg(model_path, config=None):
             )
             
             for i, agent in enumerate(agents):
-                # 为每个智能体提供全局状态和LLM指导
+                # 使用正确的Agent状态提取
+                agent_state = env.extract_agent_state(state, i)
+                
+                # 为每个智能体提供LLM指导
                 if llm_advice:
                     agent_llm_advice = next((a for a in llm_advice if a["task_id"] == i), None)
                     if agent_llm_advice:
@@ -119,13 +129,13 @@ def test_llm_maddpg(model_path, config=None):
                                 agent_llm_advice.get("target_node", 0.0)     # 目标节点
                             ]
                         ], dtype=torch.float32)
-                        agent_action = agent.select_action(state, advice_tensor, add_noise=False)
+                        agent_action = agent.select_action(agent_state, add_noise=False, llm_advice=advice_tensor)
                     else:
                         # 如果没有针对该智能体的建议
-                        agent_action = agent.select_action(state, None, add_noise=False)
+                        agent_action = agent.select_action(agent_state, add_noise=False, llm_advice=None)
                 else:
                     # 没有LLM建议
-                    agent_action = agent.select_action(state, None, add_noise=False)
+                    agent_action = agent.select_action(agent_state, add_noise=False, llm_advice=None)
                 
                 actions.append(agent_action)
 

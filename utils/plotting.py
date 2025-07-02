@@ -136,3 +136,78 @@ class Plotter:
         plt.tight_layout()
         plt.savefig(os.path.join(self.save_dir, 'metrics.png'))
         plt.close()
+
+
+def plot_training_curves(episode_rewards, episode_latencies, episode_energies, 
+                        episode_completion_rates=None, training_losses=None, save_dir="results"):
+    """绘制训练曲线 - 兼容函数"""
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # 设置中文字体
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('LLM+MADDPG 训练曲线', fontsize=16, fontweight='bold')
+    
+    # 1. 奖励曲线
+    if episode_rewards:
+        axes[0, 0].plot(episode_rewards, 'b-', linewidth=2)
+        axes[0, 0].set_title('Episode 奖励', fontsize=12)
+        axes[0, 0].set_xlabel('Episode')
+        axes[0, 0].set_ylabel('总奖励')
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # 添加移动平均线
+        if len(episode_rewards) > 10:
+            window_size = min(50, len(episode_rewards) // 10)
+            moving_avg = []
+            for i in range(len(episode_rewards)):
+                start_idx = max(0, i - window_size + 1)
+                moving_avg.append(np.mean(episode_rewards[start_idx:i+1]))
+            axes[0, 0].plot(moving_avg, 'r--', linewidth=1, alpha=0.8, label=f'移动平均({window_size})')
+            axes[0, 0].legend()
+    
+    # 2. 时延曲线
+    if episode_latencies:
+        axes[0, 1].plot(episode_latencies, 'g-', linewidth=2)
+        axes[0, 1].set_title('平均时延', fontsize=12)
+        axes[0, 1].set_xlabel('Episode')
+        axes[0, 1].set_ylabel('时延 (s)')
+        axes[0, 1].grid(True, alpha=0.3)
+    
+    # 3. 能耗曲线
+    if episode_energies:
+        axes[1, 0].plot(episode_energies, 'orange', linewidth=2)
+        axes[1, 0].set_title('平均能耗', fontsize=12)
+        axes[1, 0].set_xlabel('Episode')
+        axes[1, 0].set_ylabel('能耗 (J)')
+        axes[1, 0].grid(True, alpha=0.3)
+    
+    # 4. 完成率或训练损失
+    if episode_completion_rates:
+        axes[1, 1].plot(episode_completion_rates, 'purple', linewidth=2)
+        axes[1, 1].set_title('任务完成率', fontsize=12)
+        axes[1, 1].set_xlabel('Episode')
+        axes[1, 1].set_ylabel('完成率')
+        axes[1, 1].grid(True, alpha=0.3)
+    elif training_losses:
+        axes[1, 1].plot(training_losses, 'm-', linewidth=2)
+        axes[1, 1].set_title('训练损失', fontsize=12)
+        axes[1, 1].set_xlabel('更新步数')
+        axes[1, 1].set_ylabel('损失')
+        axes[1, 1].grid(True, alpha=0.3)
+    else:
+        axes[1, 1].text(0.5, 0.5, '暂无数据', ha='center', va='center', 
+                       transform=axes[1, 1].transAxes, fontsize=14)
+        axes[1, 1].set_title('训练指标', fontsize=12)
+    
+    plt.tight_layout()
+    
+    # 保存图表
+    save_path = os.path.join(save_dir, 'training_curves.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"训练曲线已保存至: {save_path}")
+    return save_path
