@@ -11,6 +11,8 @@ class LLMClient:
     
     def __init__(self, api_key="", model_name="qwen3-14b", server_url="http://10.200.1.35:8888/v1/completions",
                  timeout_connect=120, timeout_read=300, use_mock=True, config=None):
+    # def __init__(self, api_key="sk-1907a18fea6640c6aac5b4194920169f", model_name="qwen-plus", server_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    #              timeout_connect=120, timeout_read=300, use_mock=True, config=None):
         """
         初始化LLM客户端
         
@@ -23,25 +25,35 @@ class LLMClient:
             use_mock: 是否在失败时使用模拟模式
             config: 配置字典，用于读取max_tokens等参数
         """
-        self.api_key = api_key
-        self.model_name = model_name
-        self.server_url = server_url
-        self.timeout_connect = timeout_connect
-        self.timeout_read = timeout_read
-        self.use_mock = use_mock
-        
-        # 从配置中读取LLM参数
+        # 优先从配置文件读取LLM设置
         if config and 'llm' in config:
             llm_config = config['llm']
+            self.api_key = llm_config.get('api_key', api_key)
+            self.model_name = llm_config.get('model_name', model_name)
+            self.server_url = llm_config.get('base_url', server_url)
+            self.timeout_connect = llm_config.get('timeout', timeout_connect)
+            self.timeout_read = llm_config.get('read_timeout', timeout_read)
             self.max_tokens = llm_config.get('max_tokens', 4096)
             self.temperature = llm_config.get('temperature', 0.3)
         else:
-            # 默认值
+            # 使用传入的参数或默认值
+            self.api_key = api_key
+            self.model_name = model_name
+            self.server_url = server_url
+            self.timeout_connect = timeout_connect
+            self.timeout_read = timeout_read
             self.max_tokens = 4096
             self.temperature = 0.3
         
+        self.use_mock = use_mock
+        
+        # 判断API类型（根据URL判断使用哪种API格式）
+        self.is_chat_api = '/chat/completions' in self.server_url
+        self.is_completions_api = '/completions' in self.server_url and '/chat/completions' not in self.server_url
+        
         print(f"✅ LLM客户端初始化:")
         print(f"  服务器: {self.server_url}")
+        print(f"  API类型: {'Chat Completions' if self.is_chat_api else 'Completions' if self.is_completions_api else 'Unknown'}")
         print(f"  模型: {self.model_name}")
         print(f"  最大tokens: {self.max_tokens}")
         print(f"  温度: {self.temperature}")
@@ -49,112 +61,104 @@ class LLMClient:
         print(f"  模拟模式: {'启用' if self.use_mock else '禁用'}")
 
     def query(self, prompt):
-        """
-        查询LLM服务器
+        """向LLM服务器发送查询请求"""
+        print(f"📡 向LLM服务器发送查询请求...")
+        print(f"🌐 服务器: {self.server_url}")
+        print(f"🤖 模型: {self.model_name}")
         
-        Args:
-            prompt: 输入提示词
-            
-        Returns:
-            str: LLM返回的文本响应
-        """
-        try:
-            # 构建请求头
-            headers = {
-                "Content-Type": "application/json",
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        
+        if self.api_key:
+            headers['Authorization'] = f'Bearer {self.api_key}'
+        
+        # 根据API类型选择请求格式
+        if self.is_chat_api:
+            # Chat Completions API格式（如阿里云DashScope）
+            data = {
+                "model": self.model_name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "top_p": 0.9,
+                "stream": False
             }
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-                
-            # 构建请求数据
+            print(f"📋 使用Chat Completions API格式 (messages)")
+        elif self.is_completions_api:
+            # Completions API格式（如本地qwen服务器）
             data = {
                 "model": self.model_name,
                 "prompt": prompt,
-                "max_tokens": self.max_tokens,    # 使用配置中的值
-                "temperature": self.temperature,  # 使用配置中的值
-                "stream": False      # 不使用流式返回
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "top_p": 0.9,
+                "stream": False
             }
+            print(f"📋 使用Completions API格式 (prompt)")
+        else:
+            # 默认使用Completions格式
+            data = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "stream": False
+            }
+            print(f"📋 使用默认Completions API格式 (prompt)")
+        
+        try:
+            # 建立连接并发送请求
+            print(f"⏱️ 连接超时: {self.timeout_connect}秒, 读取超时: {self.timeout_read}秒")
             
-            print(f"\n=== 发送LLM请求 ===")
-            print(f"目标服务器: {self.server_url}")
-            print(f"模型名称: {self.model_name}")
-            print(f"提示长度: {len(prompt)}字符")
-            print(f"最大tokens: {self.max_tokens}")
-            print(f"温度: {self.temperature}")
-            print(f"连接超时: {self.timeout_connect}秒")
-            print(f"读取超时: {self.timeout_read}秒")
-            print("开始发送请求，请耐心等待LLM响应...")
-            
-            # 记录开始时间
-            start_time = time.time()
-            
-            # 发送请求并等待响应
             response = requests.post(
-                self.server_url, 
-                headers=headers, 
-                json=data, 
-                timeout=(self.timeout_connect, self.timeout_read)  # (连接超时, 读取超时)
+                self.server_url,
+                headers=headers,
+                json=data,
+                timeout=(self.timeout_connect, self.timeout_read)
             )
             
-            # 计算响应时间
-            response_time = time.time() - start_time
-            print(f"请求完成，耗时: {response_time:.2f}秒")
-            print(f"响应状态码: {response.status_code}")
-            
-            # 检查响应状态
+            # 检查HTTP状态码
             if response.status_code != 200:
-                error_text = response.text[:500] if response.text else "无错误信息"
-                print(f"LLM服务返回错误状态码: {response.status_code}")
-                print(f"错误响应内容: {error_text}")
-                raise Exception(f"LLM服务返回错误: HTTP {response.status_code}")
+                error_msg = f"LLM服务器返回错误状态码: {response.status_code}"
+                print(f"\n❌ {error_msg}")
+                print(f"响应内容: {response.text}")
+                raise Exception(error_msg)
             
-            # 解析响应JSON
-            try:
-                response_data = response.json()
-            except json.JSONDecodeError as e:
-                print(f"响应JSON解析失败: {e}")
-                print(f"原始响应内容: {response.text[:1000]}")
-                raise Exception("LLM响应格式不是有效的JSON")
+            # 解析JSON响应
+            response_data = response.json()
+            if 'choices' not in response_data or not response_data['choices']:
+                error_msg = "LLM响应格式异常：缺少choices字段"
+                print(f"\n❌ {error_msg}")
+                raise Exception(error_msg)
             
-            print(f"\n=== LLM响应解析 ===")
-            print(f"响应数据字段: {list(response_data.keys())}")
-            
-            # 提取响应文本
-            response_text = None
-            
-            # 适应不同API结构
-            if "choices" in response_data and len(response_data["choices"]) > 0:
-                # OpenAI风格API
-                response_text = response_data["choices"][0].get("text", "").strip()
-                print("使用OpenAI风格API响应格式")
-            elif "response" in response_data:
-                # 自定义API风格1
-                response_text = response_data["response"].strip()
-                print("使用自定义API响应格式1")
-            elif "output" in response_data:
-                # 自定义API风格2
-                response_text = response_data["output"].strip()
-                print("使用自定义API响应格式2")
-            elif "completion" in response_data:
-                # 自定义API风格3
-                response_text = response_data["completion"].strip()
-                print("使用自定义API响应格式3")
+            # 提取文本内容 - 根据API类型适配不同格式
+            choice = response_data['choices'][0]
+            if self.is_chat_api and 'message' in choice and 'content' in choice['message']:
+                # Chat Completions API格式
+                response_text = choice['message']['content'].strip()
+            elif 'text' in choice:
+                # Completions API格式
+                response_text = choice['text'].strip()
             else:
-                # 尝试返回整个JSON字符串
-                response_text = json.dumps(response_data)
-                print("使用完整JSON作为响应")
+                error_msg = "LLM响应格式异常：无法提取内容"
+                print(f"\n❌ {error_msg}")
+                print(f"响应结构: {choice}")
+                raise Exception(error_msg)
             
             if not response_text:
-                raise Exception("LLM响应为空或无法提取有效内容")
+                error_msg = "LLM返回空响应"
+                print(f"\n❌ {error_msg}")
+                raise Exception(error_msg)
             
-            print(f"\n=== LLM原始响应内容 ===")
-            print("=" * 60)
-            print(response_text)
-            print("=" * 60)
-            print(f"响应长度: {len(response_text)}字符")
+            print(f"✅ 成功收到LLM响应 (长度: {len(response_text)}字符)")
             
-            # 保存原始响应JSON和解析后的文本
-            self._save_raw_response_to_file(response_data)
+            # 只保存解析后的回复到last_response.txt
             self._save_response_to_file(response_text, is_mock=False)
             
             return response_text
@@ -177,42 +181,47 @@ class LLMClient:
             raise Exception(error_msg)
 
     def get_unload_strategy(self, env_state, device_info, edge_info, cloud_info, tasks_info=None):
-        """获取卸载策略建议 - 适配简化设备模型"""
-        # 构建提示
-        prompt = self._build_prompt(env_state, device_info, edge_info, cloud_info, tasks_info)
+        """获取LLM生成的卸载策略 - 仅支持格式1（三元分割格式）
         
-        # 保存提示到文件以便调试
-        with open("last_prompt.txt", "w", encoding="utf-8") as f:
-            f.write(prompt)
-        print(f"已保存提示到 last_prompt.txt (长度: {len(prompt)}字符)")
+        Returns:
+            list: 包含格式1策略的列表
+                [
+                    {
+                        "device_id": 0,
+                        "local_ratio": 0.3,
+                        "edge_ratio": 0.5,
+                        "cloud_ratio": 0.2,
+                        "target_edge": 1
+                    }, ...
+                ]
+        """
+        print("\n🚀 开始LLM卸载策略咨询（格式1：三元分割）...")
         
-        print("\n📤 发送卸载策略请求到LLM...")
-        # 查询LLM
         try:
+            # 构建提示词
+            prompt = self._build_prompt(env_state, device_info, edge_info, cloud_info, tasks_info)
+            
+            # 调用LLM
+            print(f"📡 向LLM服务器发送请求: {self.server_url}")
             response = self.query(prompt)
             
-            print(f"\n✅ LLM响应获取成功!")
-            
-            # 保存响应到文件以便调试
-            with open("last_response.txt", "w", encoding="utf-8") as f:
-                f.write(response)
-            print(f"已保存LLM响应到 last_response.txt")
-            
             print(f"\n📋 开始解析LLM响应...")
-            # 解析响应
-            strategies = self._extract_json_from_text(response)
+            # 解析响应（仅格式1）
+            strategies = self._extract_format1_from_text(response)
             
             if not strategies:
                 print("⚠️ 无法解析LLM响应中的有效策略，使用默认策略")
-                strategies = self._generate_default_strategies(len(device_info))
+                strategies = self._generate_default_format1_strategies(len(device_info))
             else:
-                print(f"✅ 成功解析LLM策略: {len(strategies)}个任务的卸载决策")
+                print(f"✅ 成功解析LLM策略: {len(strategies)}个设备的卸载决策")
                 # 打印解析到的策略概要
-                for i, strategy in enumerate(strategies):
-                    task_id = strategy.get('task_id', i)
-                    offload_ratio = strategy.get('offload_ratio', 0.0)
-                    target_node = strategy.get('target_node', 0)
-                    print(f"  任务{task_id}: 卸载比例={offload_ratio:.2f}, 目标节点={target_node}")
+                for strategy in strategies:
+                    device_id = strategy.get('device_id', 0)
+                    local_ratio = strategy.get('local_ratio', 1.0)
+                    edge_ratio = strategy.get('edge_ratio', 0.0)
+                    cloud_ratio = strategy.get('cloud_ratio', 0.0)
+                    target_edge = strategy.get('target_edge', 0)
+                    print(f"  设备{device_id}: 本地{local_ratio:.2f}, 边缘{edge_ratio:.2f}, 云端{cloud_ratio:.2f} → Edge{target_edge}")
             
             return strategies
             
@@ -220,18 +229,18 @@ class LLMClient:
             print(f"\n❌ LLM服务调用失败: {e}")
             if self.use_mock:
                 print("🔄 启用模拟模式，使用规则生成策略继续训练...")
-                # 生成模拟策略
-                return self._generate_mock_strategies(env_state, device_info, edge_info, cloud_info)
+                # 生成模拟策略（格式1）
+                return self._generate_mock_format1_strategies(env_state, device_info, edge_info, cloud_info)
             else:
                 print("🔄 返回默认策略...")
-                return self._generate_default_strategies(len(device_info))
+                return self._generate_default_format1_strategies(len(device_info))
 
-    def _generate_mock_strategies(self, env_state, device_info, edge_info, cloud_info):
-        """在LLM服务不可用时生成智能模拟策略
+    def _generate_mock_format1_strategies(self, env_state, device_info, edge_info, cloud_info):
+        """在LLM服务不可用时生成智能模拟策略（格式1：三元分割）
         
-        基于任务特征和资源状态生成合理的卸载策略
+        基于任务特征和资源状态生成合理的三元分割卸载策略
         """
-        print("🤖 生成智能模拟卸载策略...")
+        print("🤖 生成智能模拟卸载策略（格式1：三元分割）...")
         strategies = []
         
         # 简单解析环境状态
@@ -244,11 +253,11 @@ class LLMClient:
         except:
             # 异常情况下使用默认策略
             print("⚠️ 环境状态解析失败，使用默认策略")
-            return self._generate_default_strategies(len(device_info))
+            return self._generate_default_format1_strategies(len(device_info))
         
-        print(f"📊 分析{len(device_info)}个任务的特征...")
+        print(f"📊 分析{len(device_info)}个设备的任务特征...")
         
-        # 根据任务特征和资源状态生成智能策略
+        # 根据任务特征和资源状态生成智能三元分割策略
         for i in range(len(device_info)):
             device_battery = device_states[i][2] if len(device_states[i]) > 2 else 1.0  # 电池状态
             task_computation = task_states[i][0]    # 计算量 (MI)
@@ -260,90 +269,99 @@ class LLMClient:
             edge_time = task_computation / 8.0      # 边缘处理时间 (8GHz)
             cloud_time = task_computation / 32.0    # 云端处理时间 (32GHz)
             
-            # 简单的传输时间估算 (假设网络带宽)
+            # 简单的传输时间估算
             edge_transmission = task_data_size / 50.0   # 假设50MB/s到边缘
             cloud_transmission = task_data_size / 25.0  # 假设25MB/s到云端
             
-            # 决策逻辑
-            offload_ratio = 0.0
-            target_node = 0  # 默认本地
+            # 三元分割决策逻辑
+            local_ratio = 0.0
+            edge_ratio = 0.0
+            cloud_ratio = 0.0
+            target_edge = i % len(edge_info)  # 轮询分配边缘服务器
             
-            # 如果本地处理时间超过截止时间，必须卸载
+            # 根据截止时间紧急程度和电池状态决定分割策略
             if local_time > task_deadline:
-                # 比较边缘和云端的总时间
-                edge_total_time = edge_time + edge_transmission
-                cloud_total_time = cloud_time + cloud_transmission
-                
-                if edge_total_time <= task_deadline and edge_total_time <= cloud_total_time:
-                    # 卸载到边缘服务器
-                    offload_ratio = 1.0
-                    target_node = (i % len(edge_info)) + 1  # 轮询分配边缘服务器
+                # 本地无法在截止时间内完成，必须卸载
+                if device_battery < 0.2:
+                    # 电池低，全部卸载
+                    edge_total = edge_time + edge_transmission
+                    cloud_total = cloud_time + cloud_transmission
                     
-                elif cloud_total_time <= task_deadline:
-                    # 卸载到云端
-                    offload_ratio = 1.0
-                    target_node = len(edge_info) + 1  # 云端节点
-                    
-                else:
-                    # 即使超时也选择最快的选项
-                    if cloud_total_time < edge_total_time:
-                        offload_ratio = 1.0
-                        target_node = len(edge_info) + 1  # 云端
+                    if edge_total <= cloud_total:
+                        # 边缘更快，主要卸载到边缘
+                        local_ratio = 0.0
+                        edge_ratio = 0.8
+                        cloud_ratio = 0.2
                     else:
-                        offload_ratio = 1.0
-                        target_node = (i % len(edge_info)) + 1  # 边缘
-                        
+                        # 云端更快，主要卸载到云端
+                        local_ratio = 0.0
+                        edge_ratio = 0.3
+                        cloud_ratio = 0.7
+                else:
+                    # 电池充足，混合执行
+                    local_ratio = 0.2
+                    edge_ratio = 0.5
+                    cloud_ratio = 0.3
+                    
+            elif device_battery < 0.3:
+                # 电池低但时间充足，节能优先
+                if task_computation > 500:
+                    # 计算密集型，大部分卸载
+                    local_ratio = 0.1
+                    edge_ratio = 0.6
+                    cloud_ratio = 0.3
+                else:
+                    # 轻量任务，适度卸载
+                    local_ratio = 0.3
+                    edge_ratio = 0.5
+                    cloud_ratio = 0.2
+                    
             else:
-                # 本地可以完成，但考虑电池状态
-                if device_battery < 0.2:  # 电池低于20%
-                    # 部分卸载以节省电量
-                    if task_computation > 500:  # 计算密集型任务
-                        offload_ratio = 0.7
-                        # 选择更高效的目标
-                        if cloud_time + cloud_transmission < edge_time + edge_transmission:
-                            target_node = len(edge_info) + 1  # 云端
-                        else:
-                            target_node = (i % len(edge_info)) + 1  # 边缘
-                    else:
-                        offload_ratio = 0.3
-                        target_node = (i % len(edge_info)) + 1  # 边缘
+                # 电池充足，性能优先
+                if task_computation > 800:
+                    # 高计算量，利用云端并行
+                    local_ratio = 0.3
+                    edge_ratio = 0.4
+                    cloud_ratio = 0.3
+                elif task_computation > 400:
+                    # 中等计算量，主要用边缘
+                    local_ratio = 0.4
+                    edge_ratio = 0.5
+                    cloud_ratio = 0.1
                 else:
-                    # 电池充足，可以考虑本地处理或轻度卸载
-                    if task_computation > 800:  # 非常计算密集
-                        offload_ratio = 0.5
-                        target_node = len(edge_info) + 1  # 云端
-                    elif task_computation > 400:  # 中等计算量
-                        offload_ratio = 0.3
-                        target_node = (i % len(edge_info)) + 1  # 边缘
-                    # else: 保持本地处理 (offload_ratio = 0.0, target_node = 0)
+                    # 轻量任务，主要本地执行
+                    local_ratio = 0.7
+                    edge_ratio = 0.2
+                    cloud_ratio = 0.1
             
-            # 确保值在合法范围内
-            offload_ratio = max(0.0, min(1.0, offload_ratio))
-            target_node = max(0, min(len(edge_info) + len(cloud_info), target_node))
+            # 确保比例和为1
+            total = local_ratio + edge_ratio + cloud_ratio
+            if total > 0:
+                local_ratio /= total
+                edge_ratio /= total
+                cloud_ratio /= total
+            else:
+                local_ratio, edge_ratio, cloud_ratio = 1.0, 0.0, 0.0
             
             strategy = {
-                "task_id": i,
-                "offload_ratio": round(offload_ratio, 2),
-                "target_node": target_node
+                "device_id": i,
+                "local_ratio": round(local_ratio, 2),
+                "edge_ratio": round(edge_ratio, 2),
+                "cloud_ratio": round(cloud_ratio, 2),
+                "target_edge": target_edge
             }
             strategies.append(strategy)
             
             # 打印决策理由
-            target_name = "本地"
-            if target_node >= 1 and target_node <= len(edge_info):
-                target_name = f"边缘服务器{target_node-1}"
-            elif target_node > len(edge_info):
-                target_name = "云端"
-                
-            print(f"  任务{i}: 计算量{task_computation:.0f}MI, 截止{task_deadline:.1f}s -> "
-                  f"卸载{offload_ratio:.2f}到{target_name}")
+            print(f"  设备{i}: 计算量{task_computation:.0f}MI, 电池{device_battery:.1%}, 截止{task_deadline:.1f}s")
+            print(f"    → 本地{local_ratio:.2f}, 边缘{edge_ratio:.2f}, 云端{cloud_ratio:.2f}, Edge{target_edge}")
         
-        print(f"✅ 生成{len(strategies)}个智能模拟策略")
+        print(f"✅ 生成{len(strategies)}个智能模拟策略（格式1）")
         return strategies
 
-    def _extract_json_from_text(self, text):
-        """从文本中提取JSON内容，使用多种策略确保解析成功"""
-        print(f"开始解析LLM响应文本，长度: {len(text)}字符")
+    def _extract_format1_from_text(self, text):
+        """从文本中提取格式1（三元分割）JSON内容"""
+        print(f"开始解析LLM响应文本（格式1），长度: {len(text)}字符")
         
         # 预处理：移除可能的markdown标记和多余的空白
         text = text.strip()
@@ -353,14 +371,57 @@ class LLMClient:
             result = json.loads(text)
             if isinstance(result, list):
                 print("✅ 策略1成功：直接解析为JSON数组")
-                return result
+                return self._validate_format1_strategies(result)
             elif isinstance(result, dict):
-                print("✅ 策略1成功：解析为单个JSON对象，转换为数组")
-                return [result]
+                if 'strategies' in result:
+                    print("✅ 策略1成功：解析带strategies字段的JSON")
+                    return self._validate_format1_strategies(result['strategies'])
+                else:
+                    print("✅ 策略1成功：解析为单个JSON对象，转换为数组")
+                    return self._validate_format1_strategies([result])
         except:
             pass
         
-        # 策略2: 查找并提取 [...]  格式的JSON数组
+        # 策略2: 查找markdown代码块中的JSON
+        json_code_pattern = r'```json\s*(.*?)\s*```'
+        json_matches = re.findall(json_code_pattern, text, re.DOTALL | re.IGNORECASE)
+        
+        for match in json_matches:
+            try:
+                result = json.loads(match.strip())
+                if isinstance(result, dict):
+                    if 'strategies' in result:
+                        print("✅ 策略2成功：从markdown代码块中提取strategies")
+                        strategies = result['strategies']
+                        # 字段名转换
+                        strategies = self._convert_field_names(strategies)
+                        return self._validate_format1_strategies(strategies)
+                    else:
+                        print("✅ 策略2成功：从markdown代码块中提取JSON对象")
+                        converted = self._convert_field_names([result])
+                        return self._validate_format1_strategies(converted)
+                elif isinstance(result, list):
+                    print("✅ 策略2成功：从markdown代码块中提取JSON数组")
+                    converted = self._convert_field_names(result)
+                    return self._validate_format1_strategies(converted)
+            except:
+                continue
+        
+        # 策略3: 查找并提取 "strategies": [...] 格式
+        strategies_pattern = r'"strategies":\s*\[[\s\S]*?\]'
+        strategies_match = re.search(strategies_pattern, text, re.IGNORECASE)
+        
+        if strategies_match:
+            try:
+                strategies_text = "{" + strategies_match.group(0) + "}"
+                result = json.loads(strategies_text)
+                print("✅ 策略3成功：提取strategies字段")
+                strategies = self._convert_field_names(result['strategies'])
+                return self._validate_format1_strategies(strategies)
+            except:
+                pass
+        
+        # 策略4: 查找并提取 [...] 格式的JSON数组
         array_pattern = r'\[[\s\S]*?\]'
         array_matches = re.findall(array_pattern, text)
         
@@ -368,12 +429,15 @@ class LLMClient:
             try:
                 result = json.loads(match)
                 if isinstance(result, list):
-                    print("✅ 策略2成功：提取JSON数组格式")
-                    return result
+                    converted = self._convert_field_names(result)
+                    validated = self._validate_format1_strategies(converted)
+                    if validated:
+                        print("✅ 策略4成功：提取JSON数组格式")
+                        return validated
             except:
                 continue
-        
-        # 策略3: 查找并提取 {...} 格式的JSON对象
+
+        # 策略5: 查找并提取 {...} 格式的JSON对象
         object_pattern = r'\{[\s\S]*?\}'
         object_matches = re.findall(object_pattern, text)
         
@@ -381,77 +445,100 @@ class LLMClient:
         for match in object_matches:
             try:
                 obj = json.loads(match)
-                if isinstance(obj, dict) and 'task_id' in obj:
+                if isinstance(obj, dict) and ('device_id' in obj or 'local_ratio' in obj):
                     valid_objects.append(obj)
             except:
                 continue
         
         if valid_objects:
-            print(f"✅ 策略3成功：提取到{len(valid_objects)}个JSON对象")
-            return valid_objects
-        
-        # 策略4: 使用正则表达式直接提取关键信息
-        pattern = r'task_id["\s]*:[\s]*(\d+)[\s\S]*?offload_ratio["\s]*:[\s]*([\d.]+)[\s\S]*?target_node["\s]*:[\s]*(\d+)'
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        
-        if matches:
-            result = []
-            for match in matches:
-                try:
-                    task_id = int(match[0])
-                    offload_ratio = float(match[1])
-                    target_node = int(match[2])
-                    result.append({
-                        "task_id": task_id,
-                        "offload_ratio": offload_ratio,
-                        "target_node": target_node
-                    })
-                except:
-                    continue
-            
-            if result:
-                print(f"✅ 策略4成功：通过正则表达式提取{len(result)}个策略")
-                return result
-        
-        # 策略5: 查找数字序列，尝试构建策略
-        lines = text.split('\n')
-        result = []
-        
-        for line in lines:
-            # 查找包含任务信息的行
-            task_match = re.search(r'任务(\d+).*?(\d+\.?\d*).*?(\d+)', line)
-            if task_match:
-                try:
-                    task_id = int(task_match.group(1))
-                    offload_ratio = float(task_match.group(2)) if '.' in task_match.group(2) else float(task_match.group(2)) / 10
-                    target_node = int(task_match.group(3))
-                    
-                    # 确保值在合理范围内
-                    if 0 <= offload_ratio <= 1 and 0 <= target_node <= 3:
-                        result.append({
-                            "task_id": task_id,
-                            "offload_ratio": offload_ratio,
-                            "target_node": target_node
-                        })
-                except:
-                    continue
-        
-        if result:
-            print(f"✅ 策略5成功：从文本行中提取{len(result)}个策略")
-            return result
+            converted = self._convert_field_names(valid_objects)
+            validated = self._validate_format1_strategies(converted)
+            if validated:
+                print(f"✅ 策略5成功：提取到{len(validated)}个JSON对象")
+                return validated
         
         print("❌ 所有解析策略均失败")
+        print(f"📝 响应文本预览: {text[:200]}...")
         return []
+
+    def _convert_field_names(self, strategies):
+        """转换字段名，适配不同LLM的输出格式"""
+        if not isinstance(strategies, list):
+            return strategies
+        
+        converted = []
+        for strategy in strategies:
+            if not isinstance(strategy, dict):
+                converted.append(strategy)
+                continue
+                
+            # 创建新的策略对象
+            new_strategy = {}
+            
+            # 复制已知字段
+            for key in ['device_id', 'local_ratio', 'edge_ratio', 'cloud_ratio']:
+                if key in strategy:
+                    new_strategy[key] = strategy[key]
+            
+            # 转换target_edge_server到target_edge
+            if 'target_edge' in strategy:
+                new_strategy['target_edge'] = strategy['target_edge']
+            elif 'target_edge_server' in strategy:
+                new_strategy['target_edge'] = strategy['target_edge_server']
+            
+            # 忽略其他额外字段（如rationale, expected_latency等）
+            converted.append(new_strategy)
+        
+        return converted
     
-    def _generate_default_strategies(self, num_tasks):
-        """生成默认卸载策略"""
+    def _validate_format1_strategies(self, strategies):
+        """验证并修正格式1策略"""
+        if not isinstance(strategies, list):
+            return []
+        
+        validated_strategies = []
+        
+        for i, strategy in enumerate(strategies):
+            if not isinstance(strategy, dict):
+                continue
+                
+            # 提取并验证字段
+            device_id = strategy.get('device_id', i)
+            local_ratio = float(strategy.get('local_ratio', 1.0))
+            edge_ratio = float(strategy.get('edge_ratio', 0.0))
+            cloud_ratio = float(strategy.get('cloud_ratio', 0.0))
+            target_edge = int(strategy.get('target_edge', 0))
+            
+            # 归一化比例
+            total = local_ratio + edge_ratio + cloud_ratio
+            if total > 0:
+                local_ratio /= total
+                edge_ratio /= total
+                cloud_ratio /= total
+            else:
+                local_ratio, edge_ratio, cloud_ratio = 1.0, 0.0, 0.0
+            
+            validated_strategies.append({
+                "device_id": device_id,
+                "local_ratio": round(local_ratio, 3),
+                "edge_ratio": round(edge_ratio, 3),
+                "cloud_ratio": round(cloud_ratio, 3),
+                "target_edge": max(0, target_edge)
+            })
+        
+        return validated_strategies
+    
+    def _generate_default_format1_strategies(self, num_devices):
+        """生成默认的格式1策略（全本地执行）"""
         return [
             {
-                "task_id": i,
-                "offload_ratio": 0.0,
-                "target_node": 0
+                "device_id": i,
+                "local_ratio": 1.0,
+                "edge_ratio": 0.0,
+                "cloud_ratio": 0.0,
+                "target_edge": 0
             }
-            for i in range(num_tasks)
+            for i in range(num_devices)
         ]
 
     def _build_prompt(self, env_state, device_info, edge_info, cloud_info, tasks_info=None):
@@ -533,43 +620,15 @@ class LLMClient:
 ]
 
 JSON:"""
-        
+
         return prompt
-    
-    def _save_prompt_to_file(self, prompt):
-        """保存提示词到文件"""
-        try:
-            import datetime
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # 保存最新的提示词
-            with open("last_prompt.txt", "w", encoding="utf-8") as f:
-                f.write("=" * 60 + "\n")
-                f.write("发送给LLM的提示词内容\n")
-                f.write("=" * 60 + "\n")
-                f.write(prompt)
-                f.write("\n" + "=" * 60 + "\n")
-            
-            # 保存带时间戳的提示词
-            with open(f"prompt_{timestamp}.txt", "w", encoding="utf-8") as f:
-                f.write("=" * 60 + "\n")
-                f.write(f"发送给LLM的提示词内容 - {timestamp}\n")
-                f.write("=" * 60 + "\n")
-                f.write(prompt)
-                f.write("\n" + "=" * 60 + "\n")
-            
-            print(f"✅ 提示词已保存到: last_prompt.txt 和 prompt_{timestamp}.txt")
-        except Exception as e:
-            print(f"⚠️ 保存提示词失败: {e}")
     
     def _save_response_to_file(self, response_text, is_mock=False):
         """保存LLM响应文本到文件"""
         try:
-            import datetime
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             mode_label = "模拟模式" if is_mock else "LLM服务器"
             
-            # 保存最新的响应
+            # 只保存最新的响应
             with open("last_response.txt", "w", encoding="utf-8") as f:
                 f.write("=" * 60 + "\n")
                 f.write(f"LLM返回的原始内容 ({mode_label})\n")
@@ -577,33 +636,6 @@ JSON:"""
                 f.write(response_text)
                 f.write("\n" + "=" * 60 + "\n")
             
-            # 保存带时间戳的响应
-            with open(f"response_{timestamp}.txt", "w", encoding="utf-8") as f:
-                f.write("=" * 60 + "\n")
-                f.write(f"LLM返回的原始内容 ({mode_label}) - {timestamp}\n")
-                f.write("=" * 60 + "\n")
-                f.write(response_text)
-                f.write("\n" + "=" * 60 + "\n")
-            
-            print(f"✅ LLM响应已保存到: last_response.txt 和 response_{timestamp}.txt")
+            print(f"✅ LLM响应已保存到: last_response.txt")
         except Exception as e:
             print(f"⚠️ 保存LLM响应失败: {e}")
-    
-    def _save_raw_response_to_file(self, raw_json):
-        """保存LLM原始JSON响应到文件"""
-        try:
-            import datetime
-            import json
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # 保存最新的原始响应
-            with open("last_raw_response.json", "w", encoding="utf-8") as f:
-                json.dump(raw_json, f, ensure_ascii=False, indent=2)
-            
-            # 保存带时间戳的原始响应
-            with open(f"raw_response_{timestamp}.json", "w", encoding="utf-8") as f:
-                json.dump(raw_json, f, ensure_ascii=False, indent=2)
-            
-            print(f"✅ LLM原始响应已保存到: last_raw_response.json 和 raw_response_{timestamp}.json")
-        except Exception as e:
-            print(f"⚠️ 保存LLM原始响应失败: {e}")

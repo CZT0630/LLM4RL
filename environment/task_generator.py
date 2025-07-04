@@ -19,9 +19,9 @@ class TaskGenerator:
         
         # 任务类型分布权重
         self.task_type_weights = {
-            'small': 0.2,   # 20%小任务
+            'small': 0.5,   # 50%小任务
             'medium': 0.4,  # 40%中任务  
-            'large': 0.4    # 40%大任务
+            'large': 0.1    # 10%大任务
         }
         
         # 截止时间参数（基于任务大小动态设置）

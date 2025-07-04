@@ -3,7 +3,6 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from .maddpg_actor_critic import Actor, Critic
-from .replay_buffer import ReplayBuffer
 from .noise import OUNoise
 
 
@@ -21,14 +20,27 @@ class MADDPGAgent:
         if config is None:
             config = {}
         
-        # 从kwargs中提取参数（兼容旧版本调用）
+        # 从kwargs中提取参数
         self.lr_actor = kwargs.get('lr_actor', config.get('lr_actor', 0.001))
         self.lr_critic = kwargs.get('lr_critic', config.get('lr_critic', 0.001))
         self.gamma = kwargs.get('gamma', config.get('gamma', 0.99))
         self.tau = kwargs.get('tau', config.get('tau', 0.01))
         self.batch_size = kwargs.get('batch_size', config.get('batch_size', 64))
-        buffer_size = kwargs.get('buffer_size', config.get('buffer_size', 100000))
-        self.llm_distill_weight = config.get('llm_distill_weight', 0.1)  # LLM知识蒸馏权重
+        
+        # 🆕 退火策略参数配置
+        self.use_annealing = config.get('use_annealing', False)
+        if self.use_annealing:
+            # 三阶段退火策略参数
+            self.initial_llm_distill_weight = config.get('initial_llm_distill_weight', 0.8)
+            self.constant_llm_distill_weight = config.get('constant_llm_distill_weight', 0.15)
+            self.final_llm_distill_weight = config.get('final_llm_distill_weight', 0.0)
+            self.stage1_end_episode = config.get('stage1_end_episode', 300)
+            self.stage2_end_episode = config.get('stage2_end_episode', 700)
+            # 当前蒸馏权重（动态更新）
+            self.llm_distill_weight = self.initial_llm_distill_weight
+        else:
+            # 使用固定权重
+            self.llm_distill_weight = config.get('llm_distill_weight', 0.1)
         
         # 确定max_action
         if max_action is None:
@@ -51,27 +63,21 @@ class MADDPGAgent:
         
         # 噪声
         self.noise = OUNoise(action_dim)
-        
-        # 经验回放
-        self.memory = ReplayBuffer(buffer_size)
-        
-        # 兼容旧版本的replay_buffer属性
-        self.replay_buffer = self.memory
-        
+
         # 训练统计
         self.training_count = 0
 
     def select_action(self, state, add_noise=True, llm_advice=None):
         """选择动作"""
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        
+
         # 处理LLM建议
         if llm_advice is not None:
             llm_advice = torch.FloatTensor(llm_advice).unsqueeze(0).to(self.device)
-        
+
         with torch.no_grad():
             action = self.actor(state, llm_advice).cpu().data.numpy().flatten()
-            
+
         if add_noise:
             action += self.noise.sample()
             
@@ -81,39 +87,43 @@ class MADDPGAgent:
         # 处理边缘服务器ID（最后一个维度）
         if len(action) >= 2:
             action[-1] = np.clip(action[-1] * 5, 0, 4)  # 5个边缘服务器，索引0-4
-            
+
         return action
 
-    def store_experience(self, state, action, reward, next_state, done, llm_action=None):
-        """存储经验到本地缓冲区"""
-        self.memory.add(state, action, reward, next_state, done, llm_action)
-
-    def train(self, all_agents=None, replay_buffer=None, experiences=None):
+    def train(self, all_agents, shared_buffer):
         """
-        训练Agent
+        训练Agent - 使用共享缓冲区
         
         Args:
             all_agents: 所有Agent的列表（用于获取其他Agent的动作）
-            replay_buffer: 可选的共享经验缓冲区，如果为None则使用自己的缓冲区
-            experiences: 兼容旧版本的经验数据
+            shared_buffer: 共享经验回放缓冲区
+            
+        Returns:
+            dict: 训练结果统计
         """
-        # 兼容旧版本的调用方式
-        if experiences is not None:
-            return self._train_with_experiences(experiences, all_agents)
+        # 检查输入参数
+        if shared_buffer is None:
+            raise ValueError(
+                f"MADDPG Agent {self.agent_idx} 训练时必须提供共享缓冲区！"
+                "MADDPG算法要求所有Agent使用相同的经验回放缓冲区。"
+            )
         
-        if replay_buffer is None:
-            # 使用自己的缓冲区
-            if len(self.memory) < self.batch_size:
-                return {}
-            buffer_to_use = self.memory
-        else:
-            # 使用传入的共享缓冲区
-            if len(replay_buffer) < self.batch_size:
-                return {}
-            buffer_to_use = replay_buffer
+        if all_agents is None:
+            raise ValueError(
+                f"MADDPG Agent {self.agent_idx} 训练时必须提供所有Agent列表！"
+                "MADDPG算法需要其他Agent的网络参数进行训练。"
+            )
         
-        # 采样经验
-        states, actions, rewards, next_states, dones, llm_actions = buffer_to_use.sample(self.batch_size)
+        # 检查缓冲区是否有足够的经验
+        if len(shared_buffer) < self.batch_size:
+            return {
+                'message': f'缓冲区样本不足: {len(shared_buffer)} < {self.batch_size}',
+                'skipped': True,
+                'agent_id': self.agent_idx
+            }
+        
+        # 从共享缓冲区采样经验
+        states, actions, rewards, next_states, dones, llm_actions = shared_buffer.sample(self.batch_size)
         
         # 转换为tensor
         states = torch.FloatTensor(states).to(self.device)
@@ -121,7 +131,7 @@ class MADDPGAgent:
         rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
         next_states = torch.FloatTensor(next_states).to(self.device)
         dones = torch.BoolTensor(dones).unsqueeze(1).to(self.device)
-        
+
         # 训练Critic网络
         critic_loss = self._train_critic(states, actions, rewards, next_states, dones, all_agents)
         
@@ -138,36 +148,9 @@ class MADDPGAgent:
             'critic_loss': critic_loss.item(),
             'actor_loss': actor_loss.item(),
             'distill_loss': distill_loss.item() if isinstance(distill_loss, torch.Tensor) else distill_loss,
-            'training_count': self.training_count
-        }
-
-    def _train_with_experiences(self, experiences, all_agents):
-        """兼容旧版本的训练方法"""
-        # 简化的训练逻辑，用于兼容
-        states, actions, rewards, next_states, dones = experiences
-        
-        # 转换为tensor
-        states = torch.FloatTensor(states).to(self.device)
-        actions = torch.FloatTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.BoolTensor(dones).unsqueeze(1).to(self.device)
-        
-        # 简化的训练过程
-        critic_loss = self._train_critic(states, actions, rewards, next_states, dones, all_agents)
-        actor_loss, distill_loss = self._train_actor(states, actions, None, all_agents)
-        
-        # 软更新目标网络
-        self._soft_update(self.actor_target, self.actor, self.tau)
-        self._soft_update(self.critic_target, self.critic, self.tau)
-        
-        self.training_count += 1
-        
-        return {
-            'critic_loss': critic_loss.item(),
-            'actor_loss': actor_loss.item(),
-            'distill_loss': 0.0,
-            'training_count': self.training_count
+            'training_count': self.training_count,
+            'buffer_size': len(shared_buffer),
+            'agent_id': self.agent_idx
         }
 
     def _train_critic(self, states, actions, rewards, next_states, dones, all_agents):
@@ -205,7 +188,7 @@ class MADDPGAgent:
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
-        
+
         return critic_loss
 
     def _train_actor(self, states, actions, llm_actions, all_agents):
@@ -229,7 +212,7 @@ class MADDPGAgent:
         self.actor_optimizer.zero_grad()
         total_actor_loss.backward()
         self.actor_optimizer.step()
-        
+
         return total_actor_loss, distill_loss
 
     def _compute_llm_distillation_loss(self, predicted_actions, llm_actions):
@@ -267,6 +250,17 @@ class MADDPGAgent:
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
 
+    def get_training_info(self):
+        """获取训练信息"""
+        return {
+            'agent_id': self.agent_idx,
+            'training_count': self.training_count,
+            'actor_lr': self.lr_actor,
+            'critic_lr': self.lr_critic,
+            'gamma': self.gamma,
+            'tau': self.tau
+        }
+
     def save_model(self, filepath):
         """保存模型"""
         torch.save({
@@ -289,3 +283,58 @@ class MADDPGAgent:
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
         self.training_count = checkpoint.get('training_count', 0)
+
+    def update_llm_distill_weight(self, current_episode):
+        """
+        🆕 三阶段退火策略更新LLM蒸馏权重
+        
+        Args:
+            current_episode: 当前训练轮数（从0开始）
+            
+        Returns:
+            float: 更新后的蒸馏权重
+        """
+        if not self.use_annealing:
+            return self.llm_distill_weight
+            
+        if current_episode <= self.stage1_end_episode:
+            # 阶段1：线性退火从初始权重到恒定权重
+            progress = current_episode / self.stage1_end_episode
+            self.llm_distill_weight = (
+                self.initial_llm_distill_weight * (1 - progress) + 
+                self.constant_llm_distill_weight * progress
+            )
+        elif current_episode <= self.stage2_end_episode:
+            # 阶段2：保持恒定权重
+            self.llm_distill_weight = self.constant_llm_distill_weight
+        else:
+            # 阶段3：快速退火到0
+            total_stage3_episodes = self.stage2_end_episode + 100  # 100轮内降到0
+            if current_episode <= total_stage3_episodes:
+                progress = (current_episode - self.stage2_end_episode) / 100
+                progress = min(progress, 1.0)
+                self.llm_distill_weight = self.constant_llm_distill_weight * (1 - progress)
+            else:
+                self.llm_distill_weight = self.final_llm_distill_weight
+        
+        return self.llm_distill_weight
+
+    def get_current_annealing_stage(self, current_episode):
+        """
+        🆕 获取当前退火阶段信息
+        
+        Args:
+            current_episode: 当前训练轮数
+            
+        Returns:
+            tuple: (阶段名称, 阶段描述)
+        """
+        if not self.use_annealing:
+            return "固定权重", f"固定蒸馏权重 (权重: {self.llm_distill_weight:.3f})"
+            
+        if current_episode <= self.stage1_end_episode:
+            return "阶段1", f"专家指导阶段 (权重: {self.initial_llm_distill_weight:.2f} → {self.constant_llm_distill_weight:.2f})"
+        elif current_episode <= self.stage2_end_episode:
+            return "阶段2", f"平衡探索阶段 (权重: {self.constant_llm_distill_weight:.2f})"
+        else:
+            return "阶段3", f"自主学习阶段 (权重: {self.llm_distill_weight:.3f} → 0.0)"

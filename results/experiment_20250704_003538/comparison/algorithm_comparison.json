@@ -1,0 +1,17 @@
+[
+  {
+    "Algorithm": "LLM+MADDPG"
+  },
+  {
+    "Algorithm": "MADDPG",
+    "Training_Time": 340.39609813690186,
+    "Final_Reward": 2599.004335673564,
+    "Total_Episodes": 1000
+  },
+  {
+    "Algorithm": "LLM",
+    "Training_Time": 63.21189045906067,
+    "Final_Reward": -9026.872439314164,
+    "Total_Episodes": 1000
+  }
+]

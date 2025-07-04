@@ -16,6 +16,7 @@ from tqdm import tqdm
 import logging
 from datetime import datetime
 import matplotlib.pyplot as plt
+import random
 
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
 from algos.maddpg_agent import MADDPGAgent
@@ -23,17 +24,19 @@ from algos.replay_buffer import ReplayBuffer
 from llm_assistant.llm_client import LLMClient
 from llm_assistant.prompt_builder import PromptBuilder
 from llm_assistant.response_parser import ResponseParser
+from utils.config import load_config
+from utils.path_manager import get_path_manager
+from utils.csv_saver import save_training_metrics_csv
 # from utils.plotting import plot_training_curves
 # from utils.metrics import calculate_episode_metrics
 
 
-def setup_logging():
+def setup_logging(path_manager):
     """设置日志"""
-    log_dir = "results/logs"
-    os.makedirs(log_dir, exist_ok=True)
+    log_dir = path_manager.get_log_path()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = f"{log_dir}/train_complete_{timestamp}.log"
+    log_file = path_manager.get_log_file_path(f"train_llm_maddpg_{timestamp}.log")
     
     logging.basicConfig(
         level=logging.INFO,
@@ -59,13 +62,32 @@ def create_agents(env, config):
     print(f"  动作维度: {action_dim}")
     print(f"  设备数量: {env.num_devices}")
     
+    # 🆕 读取退火策略配置
+    llm_config = config.get('llm_maddpg', {})
+    use_annealing = llm_config.get('use_annealing', False)
+    
+    if use_annealing:
+        print(f"🔥 退火策略配置:")
+        print(f"  启用状态: {use_annealing}")
+        print(f"  初始权重: {llm_config.get('initial_llm_distill_weight', 0.8)}")
+        print(f"  恒定权重: {llm_config.get('constant_llm_distill_weight', 0.15)}")
+        print(f"  最终权重: {llm_config.get('final_llm_distill_weight', 0.0)}")
+        print(f"  阶段1结束: {llm_config.get('stage1_end_episode', 300)} episodes")
+        print(f"  阶段2结束: {llm_config.get('stage2_end_episode', 700)} episodes")
+    else:
+        print("ℹ️  退火策略未启用，使用固定蒸馏权重")
+    
     for i in range(env.num_devices):
+        # 构建Agent配置，包含退火策略和训练参数
+        agent_config = config['training'].copy()
+        agent_config.update(llm_config)  # 添加LLM配置包括退火策略
+        
         agent = MADDPGAgent(
             state_dim=state_dim,
             action_dim=action_dim,
             num_agents=env.num_devices,
             agent_idx=i,
-            config=config['training']
+            config=agent_config
         )
         agents.append(agent)
         
@@ -131,7 +153,7 @@ def train_agents_from_buffer(agents, shared_buffer, logger, step_count):
     
     for i, agent in enumerate(agents):
         try:
-            stats = agent.train(all_agents=agents, replay_buffer=shared_buffer)
+            stats = agent.train(agents, shared_buffer)
             training_stats[f'agent_{i}'] = stats
             
             if stats:
@@ -149,13 +171,33 @@ def train_agents_from_buffer(agents, shared_buffer, logger, step_count):
 
 def train_llm_maddpg_complete(config_path):
     """主训练函数 - 完整的训练流程"""
+    # 加载配置
+    config = load_config(config_path)
+    
+    # 使用路径管理器
+    path_manager = get_path_manager()
+    
     # 设置日志
-    logger = setup_logging()
+    logger = setup_logging(path_manager)
     logger.info("开始完整版LLM+MADDPG训练")
     
-    # 加载配置
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
+    # 创建保存目录 - 使用正确的算法名称
+    model_dir = path_manager.get_model_path("llm_maddpg")
+    data_dir = path_manager.get_data_path("csv")
+    json_dir = path_manager.get_data_path("json")
+    plot_dir = path_manager.get_plot_path()
+    log_dir = path_manager.get_log_path()
+    
+    os.makedirs(model_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(json_dir, exist_ok=True)
+    os.makedirs(plot_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logger.info(f"🔧 [LLM+MADDPG] 路径配置:")
+    logger.info(f"  模型保存路径: {model_dir}")
+    logger.info(f"  数据保存路径: {data_dir}")
+    logger.info(f"  实验目录: {path_manager.get_experiment_dir()}")
     
     # 创建环境
     logger.info("创建云边端三层架构环境...")
@@ -173,13 +215,8 @@ def train_llm_maddpg_complete(config_path):
     logger.info("初始化LLM助手...")
     try:
         llm_client = LLMClient(
-            api_key=config['llm'].get('api_key', ''),
-            model_name=config['llm']['model_name'],
-            server_url=config['llm'].get('base_url', 'http://10.200.1.35:8888/v1/completions'),
-            timeout_connect=config['llm'].get('timeout', 120),
-            timeout_read=config['llm'].get('read_timeout', 300),
-            use_mock=config['llm'].get('use_mock_when_unavailable', False),
-            config=config  # 传递完整配置以支持max_tokens等参数
+            config=config,
+            use_mock=config['llm'].get('use_mock_when_unavailable', False)
         )
         prompt_builder = PromptBuilder()
         response_parser = ResponseParser()
@@ -188,13 +225,23 @@ def train_llm_maddpg_complete(config_path):
         logger.warning(f"LLM初始化失败，将跳过LLM咨询: {e}")
         llm_available = False
     
-    # 训练参数
-    num_episodes = config['training'].get('episodes', 1000)
-    max_steps_per_episode = config['training'].get('max_steps_per_episode', 100)
+    # 🆕 从配置文件读取训练参数
+    llm_config = config.get('llm_maddpg', {})
     
-    # 训练策略参数
-    train_frequency = 20  # 每20步训练一次
-    llm_episode_interval = 2  # 每2个Episode使用一次LLM（交替）
+    # 训练参数
+    num_episodes = llm_config.get('max_episodes', config['training'].get('episodes', 1000))
+    max_steps_per_episode = llm_config.get('max_steps', config['training'].get('max_steps_per_episode', 200))
+    
+    # 🆕 训练策略参数（从配置文件读取）
+    train_frequency = llm_config.get('train_frequency', 50)  # 每12步训练一次
+    llm_episode_interval = llm_config.get('llm_episode_interval', 2)  # 每2个Episode使用一次LLM
+    llm_distill_weight = llm_config.get('llm_distill_weight', 0.1)  # LLM知识蒸馏权重
+    exploration_episodes = llm_config.get('exploration_episodes', int(num_episodes * 0.9))  # 探索轮数
+    
+    # 🆕 读取训练策略参数
+    save_frequency = config['training']['save_frequency']
+    log_frequency = config['training']['log_frequency']
+    warm_up_episodes = config['training']['warm_up_episodes']
     
     # 记录指标
     episode_rewards = []
@@ -206,27 +253,59 @@ def train_llm_maddpg_complete(config_path):
     # 全局step计数器
     global_step_count = 0
     
-    logger.info(f"开始训练，总Episodes: {num_episodes}")
-    logger.info(f"训练策略: 每{train_frequency}步训练一次, 每{llm_episode_interval}个Episode使用LLM")
+    logger.info(f"🔧 [LLM+MADDPG] 训练策略配置:")
+    logger.info(f"  训练轮数: {num_episodes}")
+    logger.info(f"  每轮最大步数: {max_steps_per_episode}")
+    logger.info(f"  训练频率: 每{train_frequency}步训练一次")
+    logger.info(f"  LLM指导间隔: 每{llm_episode_interval}个Episode使用LLM")
+    logger.info(f"  预热轮数: {warm_up_episodes}")
+    logger.info(f"  探索轮数: {exploration_episodes}")
+    logger.info(f"  知识蒸馏权重: {llm_distill_weight}")
     
     for episode in tqdm(range(num_episodes), desc="训练进度"):
         logger.info(f"\n{'='*80}")
         logger.info(f"Episode {episode + 1}/{num_episodes}")
         logger.info(f"{'='*80}")
         
+        # 🆕 更新所有Agent的LLM蒸馏权重（退火策略）
+        for agent in agents:
+            if hasattr(agent, 'update_llm_distill_weight'):
+                old_weight = agent.llm_distill_weight
+                new_weight = agent.update_llm_distill_weight(episode)
+                
+                # 显示权重变化（仅在变化时显示）
+                if abs(old_weight - new_weight) > 0.001:
+                    stage_name, stage_desc = agent.get_current_annealing_stage(episode)
+                    logger.info(f"🔥 退火策略更新: {stage_name}")
+                    logger.info(f"    {stage_desc}")
+                    logger.info(f"    权重变化: {old_weight:.3f} → {new_weight:.3f}")
+        
+        # 🆕 显示当前退火阶段（第一个Agent的状态代表所有Agent）
+        if hasattr(agents[0], 'get_current_annealing_stage'):
+            stage_name, stage_desc = agents[0].get_current_annealing_stage(episode)
+            current_weight = agents[0].llm_distill_weight
+            logger.info(f"📊 当前蒸馏状态: {stage_desc} (当前权重: {current_weight:.3f})")
+        
+        # 🆕 判断当前训练阶段
+        is_warm_up = episode < warm_up_episodes
+        is_exploration = episode < exploration_episodes
+        
         # 判断是否在当前Episode使用LLM
-        use_llm_this_episode = (episode % llm_episode_interval == 0) and llm_available
-        logger.info(f"Episode {episode + 1}: {'使用LLM指导' if use_llm_this_episode else '纯MADDPG训练'}")
+        use_llm_this_episode = (episode % llm_episode_interval == 0) and llm_available and not is_warm_up
+        
+        stage = "预热阶段" if is_warm_up else ("探索阶段" if is_exploration else "收敛阶段")
+        llm_status = "使用LLM指导" if use_llm_this_episode else "纯MADDPG训练"
+        logger.info(f"Episode {episode + 1}: {stage} - {llm_status}")
         
         # 重置环境
         state, _ = env.reset()
         episode_reward = 0
-        episode_step_count = 0
+        episode_latencies = []  # 🆕 收集每步的延迟
+        episode_energies = []   # 🆕 收集每步的能耗
         
         # Episode循环
         for step in range(max_steps_per_episode):
             global_step_count += 1
-            episode_step_count += 1
             
             logger.debug(f"\nEpisode {episode + 1}, Step {step + 1}")
 
@@ -250,8 +329,14 @@ def train_llm_maddpg_complete(config_path):
                 # 使用正确的Agent状态提取方法
                 agent_state = env.extract_agent_state(current_state, i)
                 
-                # 在训练早期增加探索
-                add_noise = episode < num_episodes * 0.8
+                # 🆕 优化探索策略
+                if is_warm_up:
+                    add_noise = True  # 预热期始终探索
+                elif is_exploration:
+                    add_noise = True  # 探索期始终探索
+                else:
+                    add_noise = episode < num_episodes * 0.9  # 收敛期适度探索
+                    
                 action = agent.select_action(agent_state, add_noise=add_noise)
                 agent_actions.append(action)
                 
@@ -272,28 +357,8 @@ def train_llm_maddpg_complete(config_path):
                 print(f"    归一化分割: [本地:{alpha1_norm:.3f}, 边缘:{alpha2_norm:.3f}, 云端:{alpha3_norm:.3f}]")
                 print(f"    目标边缘服务器: Edge{edge_id}")
                 print(f"    探索模式: {'开启' if add_noise else '关闭'}")
-                
-                # # 策略分析
-                # if alpha1_norm > 0.5:
-                #     strategy = "本地优先策略"
-                # elif alpha2_norm > 0.5:
-                #     strategy = "边缘卸载策略"
-                # elif alpha3_norm > 0.5:
-                #     strategy = "云端卸载策略"
-                # else:
-                #     strategy = "混合卸载策略"
-                # print(f"    策略类型: {strategy}")
-                # print()
 
             agent_actions = np.array(agent_actions)
-            
-            # print(f"📊 MADDPG整体策略统计:")
-            # print(f"  总设备数: {len(agent_actions)}")
-            # print(f"  平均本地比例: {np.mean(agent_actions[:, 0]):.3f}")
-            # print(f"  平均边缘比例: {np.mean(agent_actions[:, 1]):.3f}")
-            # print(f"  平均云端比例: {np.mean(agent_actions[:, 2]):.3f}")
-            # print(f"  最常选择的边缘服务器: Edge{int(np.round(np.mean(agent_actions[:, -1])))}")
-            # print()
             
             # 3. 执行动作、环境交互
             next_state, rewards, terminated, truncated, info = env.step(
@@ -315,8 +380,12 @@ def train_llm_maddpg_complete(config_path):
                     llm_action=llm_expert_actions if use_llm_this_episode else None
                 )
             
-            # 5. 每20步训练一次
-            if global_step_count % train_frequency == 0:
+            # 🆕 训练条件：非预热期 + 达到训练频率 + 缓冲区充足
+            should_train = (not is_warm_up and 
+                          global_step_count % train_frequency == 0 and
+                          len(shared_buffer) > config['maddpg']['batch_size'])
+            
+            if should_train:
                 logger.info(f"\n--- 第{global_step_count}步: 开始训练所有Agent ---")
                 train_stats = train_agents_from_buffer(agents, shared_buffer, logger, global_step_count)
                 training_losses.append(train_stats)
@@ -324,6 +393,20 @@ def train_llm_maddpg_complete(config_path):
             # 更新状态和奖励
             state = next_state
             episode_reward += np.mean(rewards)
+            
+            # 🆕 从info中提取延迟和能耗，过滤零值
+            if info:
+                step_latencies = info.get('total_latencies', [])
+                step_energies = info.get('total_energies', [])
+                
+                # 过滤掉零值，只保留有效的任务处理数据
+                valid_latencies = [lat for lat in step_latencies if lat > 0]
+                valid_energies = [eng for eng in step_energies if eng > 0]
+                
+                if valid_latencies:
+                    episode_latencies.extend(valid_latencies)
+                if valid_energies:
+                    episode_energies.extend(valid_energies)
             
             # 检查终止条件
             if terminated or truncated:
@@ -333,41 +416,32 @@ def train_llm_maddpg_complete(config_path):
         # Episode结束，记录指标
         episode_rewards.append(episode_reward)
         
-        # 从info中提取指标
-        if info:
-            avg_latency = np.mean(info.get('total_latencies', [0]))
-            avg_energy = np.mean(info.get('total_energies', [0]))
-            
-            episode_latencies.append(avg_latency)
-            episode_energies.append(avg_energy)
-            
-            # 计算任务完成率
-            completion_stats = info.get('task_completion_stats', {})
-            completion_rate = completion_stats.get('on_time_completion_rate', 0.0)
-            overall_completion_rate = completion_stats.get('overall_completion_rate', 0.0)
-            timeout_rate = completion_stats.get('timeout_rate', 0.0)
-            
-            episode_completion_rates.append(completion_rate)
-            
-            # 如果有截止时间违反信息，记录详细信息
-            violations = info.get('deadline_violations', [])
-            if violations:
-                logger.info(f"Episode {episode + 1} 截止时间违反:")
-                for v in violations[-3:]:  # 只显示最近3个违反
-                    logger.info(f"  任务{v['task_id']}({v['task_type']}): 截止{v['deadline']:.1f}s, 实际{v['actual_time']:.1f}s, 超时{v['overtime']:.1f}s")
+        # Episode 结束，统计指标
+        # 使用实际任务完成率而不是固定值
+        completion_stats = env.get_task_completion_rate()
+        episode_completion_rate = completion_stats.get('on_time_completion_rate', 0.0)
         
-        # 定期打印进度
-        if (episode + 1) % 10 == 0:
-            recent_reward = np.mean(episode_rewards[-10:])
-            recent_latency = np.mean(episode_latencies[-10:]) if episode_latencies else 0
-            recent_energy = np.mean(episode_energies[-10:]) if episode_energies else 0
-            recent_completion = np.mean(episode_completion_rates[-10:]) if episode_completion_rates else 0
+        # 计算平均延迟和能耗
+        avg_latency = np.mean(episode_latencies) if episode_latencies else 0.0
+        avg_energy = np.mean(episode_energies) if episode_energies else 0.0
+        
+        # 添加到对应的列表中用于最终保存
+        episode_latencies.append(avg_latency)
+        episode_energies.append(avg_energy)
+        episode_completion_rates.append(episode_completion_rate)
+        
+        # 🆕 优化进度打印
+        if (episode + 1) % log_frequency == 0:
+            recent_reward = np.mean(episode_rewards[-log_frequency:])
+            recent_latency = np.mean(episode_latencies[-log_frequency:]) if episode_latencies else 0
+            recent_energy = np.mean(episode_energies[-log_frequency:]) if episode_energies else 0
+            recent_completion = np.mean(episode_completion_rates[-log_frequency:]) if episode_completion_rates else 0
             
-            logger.info(f"\nEpisode {episode + 1} 阶段性总结:")
-            logger.info(f"  最近10轮平均奖励: {recent_reward:.3f}")
-            logger.info(f"  最近10轮平均时延: {recent_latency:.3f}s")
-            logger.info(f"  最近10轮平均能耗: {recent_energy:.3f}J")
-            logger.info(f"  最近10轮按时完成率: {recent_completion:.3f}")
+            logger.info(f"\nEpisode {episode + 1} 阶段性总结 ({stage}):")
+            logger.info(f"  最近{log_frequency}轮平均奖励: {recent_reward:.3f}")
+            logger.info(f"  最近{log_frequency}轮平均时延: {recent_latency:.3f}s")
+            logger.info(f"  最近{log_frequency}轮平均能耗: {recent_energy:.3f}J")
+            logger.info(f"  最近{log_frequency}轮按时完成率: {recent_completion:.3f}")
             
             # 显示详细的任务完成统计
             if info and 'task_completion_stats' in info:
@@ -381,28 +455,30 @@ def train_llm_maddpg_complete(config_path):
             
             logger.info(f"  全局步数: {global_step_count}")
             logger.info(f"  缓冲区大小: {len(shared_buffer)}")
+            
+            # 🆕 收敛检测
+            if not is_warm_up and len(episode_rewards) >= 50:
+                recent_rewards = episode_rewards[-50:]
+                reward_std = np.std(recent_rewards)
+                convergence_threshold = config['training']['convergence_threshold']
+                if reward_std < convergence_threshold:
+                    logger.info(f"  🎯 检测到收敛！奖励标准差: {reward_std:.4f} < {convergence_threshold}")
         
-        # 定期保存模型
-        if (episode + 1) % 100 == 0:
-            model_dir = "results/models"
-            os.makedirs(model_dir, exist_ok=True)
+        # 🆕 定期保存模型
+        if (episode + 1) % save_frequency == 0:
             for i, agent in enumerate(agents):
-                model_path = f"{model_dir}/complete_agent_{i}_episode_{episode + 1}.pth"
+                model_path = path_manager.get_model_file_path("llm_maddpg", f"agent_{i}_episode_{episode + 1}.pth")
                 agent.save_model(model_path)
-            logger.info(f"Episode {episode + 1}: 模型已保存")
+            logger.info(f"Episode {episode + 1}: 模型已保存到 {model_dir}")
     
     # 训练结束，保存最终模型
     logger.info("训练完成，保存最终模型...")
-    final_model_dir = "results/final_models"
-    os.makedirs(final_model_dir, exist_ok=True)
     for i, agent in enumerate(agents):
-        model_path = f"{final_model_dir}/complete_agent_{i}_final.pth"
-        agent.save_model(model_path)
+        final_model_path = path_manager.get_model_file_path("llm_maddpg", f"agent_{i}_final.pth")
+        agent.save_model(final_model_path)
     
     # 保存训练统计数据
     logger.info("保存训练统计数据...")
-    stats_dir = "results/stats"
-    os.makedirs(stats_dir, exist_ok=True)
     
     training_data = {
         'episode_rewards': episode_rewards,
@@ -414,13 +490,28 @@ def train_llm_maddpg_complete(config_path):
         'config': config
     }
     
-    with open(f"{stats_dir}/training_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", 'w', encoding='utf-8') as f:
+    # 保存JSON格式
+    json_file = path_manager.get_data_file_path("json", f"llm_maddpg_training_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    with open(json_file, 'w', encoding='utf-8') as f:
         json.dump(training_data, f, indent=2, ensure_ascii=False)
+    
+    # 🆕 保存核心指标到CSV表格
+    logger.info("保存训练指标到CSV表格...")
+    try:
+        csv_filepath = save_training_metrics_csv(
+            episode_rewards=episode_rewards,
+            episode_latencies=episode_latencies,
+            episode_energies=episode_energies,
+            episode_completion_rates=episode_completion_rates,
+            algorithm_name="LLM_MADDPG",
+            save_dir=data_dir
+        )
+        logger.info(f"✅ CSV文件已保存: {csv_filepath}")
+    except Exception as e:
+        logger.error(f"❌ 保存CSV文件失败: {e}")
     
     # 绘制训练曲线
     logger.info("绘制训练曲线...")
-    plot_dir = "results/plots"
-    os.makedirs(plot_dir, exist_ok=True)
     
     # 创建综合训练曲线
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
@@ -457,7 +548,8 @@ def train_llm_maddpg_complete(config_path):
         axes[1, 1].grid(True)
     
     plt.tight_layout()
-    plt.savefig(f"{plot_dir}/complete_training_curves.png", dpi=300, bbox_inches='tight')
+    plot_file = path_manager.get_plot_file_path("llm_maddpg_training_curves.png")
+    plt.savefig(plot_file, dpi=300, bbox_inches='tight')
     plt.close()
     
     logger.info(f"训练完成！")
@@ -467,9 +559,22 @@ def train_llm_maddpg_complete(config_path):
     logger.info(f"最终平均时延: {np.mean(episode_latencies[-50:]):.3f}s")
     logger.info(f"最终平均能耗: {np.mean(episode_energies[-50:]):.3f}J")
     logger.info(f"最终任务完成率: {np.mean(episode_completion_rates[-50:]):.3f}")
-    logger.info(f"结果保存在 results/ 目录")
+    logger.info(f"模型保存路径: {model_dir}")
+    logger.info(f"数据保存路径: {data_dir}")
+    logger.info(f"📁 所有结果保存在: {path_manager.get_experiment_dir()}")
     
-    return training_data
+    # 返回完整的训练结果
+    return {
+        'algorithm': 'LLM+MADDPG',
+        'episode_rewards': episode_rewards,
+        'episode_latencies': episode_latencies,
+        'episode_energies': episode_energies,
+        'episode_completion_rates': episode_completion_rates,
+        'training_losses': training_losses,
+        'global_step_count': global_step_count,
+        'config': config,
+        'model_paths': [path_manager.get_model_file_path("llm_maddpg", f"agent_{i}_final.pth") for i in range(len(agents))]
+    }
 
 
 if __name__ == "__main__":

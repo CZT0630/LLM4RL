@@ -48,45 +48,126 @@ class CloudEdgeDeviceEnv(gym.Env):
     def __init__(self, config):
         super(CloudEdgeDeviceEnv, self).__init__()
 
-        # 系统架构配置
-        self.num_devices = 10      # 10个端侧设备
-        self.num_edges = 5         # 5个边缘服务器  
-        self.num_clouds = 1        # 1个云服务器
+        self.config = config
+        
+        # 基础配置
+        self.num_devices = config.get('environment', {}).get('num_devices', 10)
+        self.num_edges = config.get('environment', {}).get('num_edges', 5)
+        self.num_clouds = config.get('environment', {}).get('num_clouds', 1)
+        
+        # 🚀 真实边缘环境任务生成配置
+        self.task_generation_config = {
+            # 基础泊松参数
+            'base_arrival_rate': 0.8,      # 基础任务到达率（每设备每step）
+            'poisson_lambda': 1.2,         # 泊松分布参数
+            
+            # 时间模式配置
+            'time_pattern_enabled': True,   # 启用时间模式
+            'peak_hours': [20, 40, 60, 80], # 高峰时段（step）
+            'peak_multiplier': 2.5,         # 高峰期倍率
+            'low_multiplier': 0.4,          # 低峰期倍率
+            'pattern_cycle': 20,            # 模式周期（step）
+            
+            # 突发任务配置
+            'burst_probability': 0.05,      # 突发概率（每step 5%）
+            'burst_intensity': 3.0,         # 突发强度倍率
+            'burst_duration': [2, 5],       # 突发持续时间范围
+            
+            # 负载控制
+            'max_concurrent_tasks': 200,    # 增加并发限制
+            'device_load_threshold': 60.0,  # 设备负载阈值（秒）
+            'system_load_threshold': 800.0, # 系统负载阈值（秒）
+            'emergency_threshold': 1000.0,  # 紧急阈值
+            
+            # 应用场景混合
+            'application_mix': {
+                'iot_sensors': 0.4,         # IoT传感器数据
+                'mobile_apps': 0.3,         # 移动应用
+                'video_stream': 0.15,       # 视频流处理
+                'ai_inference': 0.1,        # AI推理
+                'emergency': 0.05           # 紧急任务
+            }
+        }
+        
+        # 🚀 动态截止时间配置
+        self.deadline_config = {
+            'adaptive_deadline': True,
+            'base_factors': {
+                'iot_sensors': (2.0, 4.0),     # IoT: 宽松截止时间
+                'mobile_apps': (1.5, 3.0),     # 移动应用: 中等截止时间
+                'video_stream': (1.2, 2.0),    # 视频: 严格截止时间
+                'ai_inference': (1.8, 3.5),    # AI: 中等偏宽松
+                'emergency': (1.1, 1.5)        # 紧急: 极严格截止时间
+            },
+            'load_adjustment': True,
+            'min_deadline': 2.0,
+            'congestion_penalty': 1.5
+        }
 
         # 创建设备
         self._create_devices()
-        
+
         # 任务生成器
-        task_config = config.get('task_config', {})
-        if not task_config:
-            # 使用默认任务配置
-            task_config = {
-                'task_types': {
-                    'small': {'data_range': [1, 5], 'probability': 0.4},
-                    'medium': {'data_range': [10, 50], 'probability': 0.4},
-                    'large': {'data_range': [100, 200], 'probability': 0.2}
-                },
-                'processing_density': 0.2e9,
-                'deadline_multiplier': 2.0
+        self.task_generator = TaskGenerator(config)
+        
+        # 🚀 真实场景任务类型重新定义
+        self.task_generator.task_type_weights = {
+            'small': 0.5,   # 小任务：IoT传感器、文本处理
+            'medium': 0.35, # 中任务：图像处理、轻度AI
+            'large': 0.15   # 大任务：视频分析、复杂AI
+        }
+        
+        # 🚀 应用场景特定的任务参数
+        self.application_task_configs = {
+            'iot_sensors': {
+                'size_range': (0.1, 2.0),      # 0.1-2MB
+                'compute_density': 0.05e9,      # 低计算密度
+                'priority': 'low'
+            },
+            'mobile_apps': {
+                'size_range': (1.0, 20.0),     # 1-20MB
+                'compute_density': 0.15e9,      # 中计算密度
+                'priority': 'medium'
+            },
+            'video_stream': {
+                'size_range': (50.0, 150.0),   # 50-150MB
+                'compute_density': 0.3e9,       # 高计算密度
+                'priority': 'high'
+            },
+            'ai_inference': {
+                'size_range': (10.0, 80.0),    # 10-80MB
+                'compute_density': 0.25e9,      # 高计算密度
+                'priority': 'medium'
+            },
+            'emergency': {
+                'size_range': (0.5, 30.0),     # 0.5-30MB
+                'compute_density': 0.1e9,       # 可变计算密度
+                'priority': 'critical'
             }
-        self.task_generator = TaskGenerator(task_config)
+        }
+        
+        # 🚀 真实环境任务生成状态
+        self.task_generation_state = {
+            'last_generation_step': -1,     # 上次生成步数
+            'total_concurrent_tasks': 0,    # 当前并发任务数
+            'burst_active': False,          # 是否在突发期
+            'burst_end_step': 0,           # 突发结束步数
+            'current_pattern_phase': 'normal', # 当前模式：normal/peak/low
+            'generation_history': [],       # 生成历史
+            'daily_task_count': 0          # 每日任务计数
+        }
 
-        # 状态空间定义 (简化后的状态)
-        self.state_dim = (
-            self.num_devices * 3 +     # UE状态: CPU频率, 电池, 任务负载
-            self.num_edges * 2 +       # ES状态: CPU频率, 任务负载
-            self.num_clouds * 1 +      # CS状态: CPU频率
-            self.num_devices * 6       # 任务状态: 类型, 数据大小, CPU周期, 截止时间, 剩余时间, 紧急程度
-        )
+        # 状态空间维度计算
+        # UE: 3个特征 × num_devices
+        # ES: 2个特征 × num_edges  
+        # CS: 1个特征 × num_clouds
+        # 任务: 6个特征 × num_devices
+        self.state_dim = (3 * self.num_devices + 
+                         2 * self.num_edges + 
+                         1 * self.num_clouds + 
+                         6 * self.num_devices)
 
-        # 单个Agent的状态维度
-        self.agent_state_dim = (
-            3 +                        # 自己的UE状态: CPU频率, 电池, 任务负载
-            self.num_edges * 2 +       # 所有ES状态: CPU频率, 任务负载 (共享信息)
-            self.num_clouds * 1 +      # 所有CS状态: CPU频率 (共享信息)
-            6                          # 自己的任务状态: 类型, 数据大小, 任务所需的CPU周期, 截止时间, 剩余时间, 紧急程度
-        )
-
+        # 定义观察和动作空间
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(self.state_dim,), dtype=np.float32
         )
@@ -108,6 +189,10 @@ class CloudEdgeDeviceEnv(gym.Env):
         # Episode控制
         self.episode_step = 0
         self.max_steps = 100
+        
+        # 🆕 任务生成控制
+        self.last_generation_step = 0  # 上次生成任务的步数
+        self.total_concurrent_tasks = 0  # 当前并发任务数
         
         # 统计信息
         self.step_stats = {
@@ -139,7 +224,7 @@ class CloudEdgeDeviceEnv(gym.Env):
             self.user_equipments.append(ue)
             
         # 创建边缘服务器（异构配置：{5, 6, 8, 10, 12} GHz）
-        edge_frequencies = [5, 6, 8, 10, 12]
+        edge_frequencies = [12, 11, 10, 9, 8]
         self.edge_servers = []
         for i in range(self.num_edges):
             es = EdgeServer(i, edge_frequencies[i % len(edge_frequencies)])
@@ -185,6 +270,17 @@ class CloudEdgeDeviceEnv(gym.Env):
         self.global_time = 0.0
         self.episode_step = 0
         
+        # 🚀 重置真实环境任务生成状态
+        self.task_generation_state = {
+            'last_generation_step': -1,     # 上次生成步数
+            'total_concurrent_tasks': 0,    # 当前并发任务数
+            'burst_active': False,          # 是否在突发期
+            'burst_end_step': 0,           # 突发结束步数
+            'current_pattern_phase': 'normal', # 当前模式：normal/peak/low
+            'generation_history': [],       # 生成历史
+            'daily_task_count': 0          # 每日任务计数
+        }
+        
         # 重置统计信息
         self.step_stats = {
             'tasks_completed': 0,
@@ -212,24 +308,225 @@ class CloudEdgeDeviceEnv(gym.Env):
         return self._get_observation(), {}
 
     def _generate_new_tasks(self):
-        """为每个设备生成新任务"""
-        print(f"[Step {self.episode_step}] 生成新任务...")
-        task_data_list = self.task_generator.generate_tasks(self.num_devices)
-        self.current_tasks = [Task(task_data) for task_data in task_data_list]
+        """🚀 真实边缘环境任务生成策略 - 泊松分布 + 时间模式 + 突发任务"""
+        print(f"\n[Step {self.episode_step}] 🌟 真实边缘环境任务生成...")
         
-        # 为新任务设置创建步骤
-        for i, task in enumerate(self.current_tasks):
-            task.creation_step = self.episode_step
+        # 1. 计算当前时间模式倍率
+        pattern_multiplier = self._calculate_time_pattern_multiplier()
+        
+        # 2. 检查和处理突发任务
+        burst_multiplier = self._handle_burst_events()
+        
+        # 3. 计算最终到达率
+        final_arrival_rate = (self.task_generation_config['base_arrival_rate'] * 
+                             pattern_multiplier * burst_multiplier)
+        
+        print(f"   时间模式倍率: {pattern_multiplier:.2f}, 突发倍率: {burst_multiplier:.2f}")
+        print(f"   最终到达率: {final_arrival_rate:.2f} tasks/device/step")
+        
+        # 4. 生成任务
+        task_data_list = []
+        total_generated = 0
+        
+        for device_id in range(self.num_devices):
+            # 使用泊松分布确定该设备的任务数
+            device_tasks = self._generate_poisson_tasks(device_id, final_arrival_rate)
             
-        # 更新任务生成统计
-        self.task_completion_stats['total_tasks_generated'] += len(self.current_tasks)
+            if device_tasks:
+                total_generated += len(device_tasks)
+                task_data_list.extend(device_tasks)
+            
+            # 为当前设备填充任务（如果有多个任务，取第一个；如果没有，设为None）
+            device_task = device_tasks[0] if device_tasks else None
+            
+        # 5. 创建任务对象
+        self.current_tasks = []
+        task_index = 0
+        
+        for device_id in range(self.num_devices):
+            if task_index < len(task_data_list) and task_data_list[task_index].get('device_id') == device_id:
+                task = Task(task_data_list[task_index])
+                task.creation_step = self.episode_step
+                self.current_tasks.append(task)
+                
+                # 更新统计
+                self.task_completion_stats['total_tasks_generated'] += 1
+                self.task_generation_state['total_concurrent_tasks'] += 1
+                self.task_generation_state['daily_task_count'] += 1
+                
+                task_index += 1
+            else:
+                self.current_tasks.append(None)
+        
+        # 6. 更新生成历史
+        self.task_generation_state['generation_history'].append({
+            'step': self.episode_step,
+            'total_generated': total_generated,
+            'pattern_phase': self.task_generation_state['current_pattern_phase'],
+            'burst_active': self.task_generation_state['burst_active'],
+            'arrival_rate': final_arrival_rate
+        })
+        
+        # 7. 打印生成结果
+        valid_tasks = sum(1 for task in self.current_tasks if task is not None)
+        print(f"   📊 生成结果: {valid_tasks}/{self.num_devices}个设备有任务")
+        print(f"   💼 当前并发任务: {self.task_generation_state['total_concurrent_tasks']}")
+        print(f"   📈 累计生成任务: {self.task_completion_stats['total_tasks_generated']}")
+        
+    def _calculate_time_pattern_multiplier(self):
+        """计算时间模式倍率"""
+        if not self.task_generation_config['time_pattern_enabled']:
+            return 1.0
+            
+        # 计算在周期中的位置
+        cycle_position = self.episode_step % self.task_generation_config['pattern_cycle']
+        
+        # 判断当前是否在高峰期
+        is_peak = any(abs(self.episode_step - peak) <= 2 for peak in self.task_generation_config['peak_hours'])
+        
+        if is_peak:
+            self.task_generation_state['current_pattern_phase'] = 'peak'
+            return self.task_generation_config['peak_multiplier']
+        elif cycle_position < 5:  # 周期前25%为低峰期
+            self.task_generation_state['current_pattern_phase'] = 'low'
+            return self.task_generation_config['low_multiplier']
+        else:
+            self.task_generation_state['current_pattern_phase'] = 'normal'
+            return 1.0
+    
+    def _handle_burst_events(self):
+        """处理突发事件"""
+        # 检查当前突发是否结束
+        if self.task_generation_state['burst_active']:
+            if self.episode_step >= self.task_generation_state['burst_end_step']:
+                self.task_generation_state['burst_active'] = False
+                print(f"   🔥 突发事件结束 (step {self.episode_step})")
+                return 1.0
+            else:
+                remaining = self.task_generation_state['burst_end_step'] - self.episode_step
+                print(f"   🔥 突发事件进行中 (剩余{remaining}步)")
+                return self.task_generation_config['burst_intensity']
+        
+        # 检查是否触发新的突发事件
+        if np.random.random() < self.task_generation_config['burst_probability']:
+            duration = np.random.randint(*self.task_generation_config['burst_duration'])
+            self.task_generation_state['burst_active'] = True
+            self.task_generation_state['burst_end_step'] = self.episode_step + duration
+            
+            print(f"   🔥 新突发事件触发！持续{duration}步")
+            return self.task_generation_config['burst_intensity']
+        
+        return 1.0
+    
+    def _generate_poisson_tasks(self, device_id, arrival_rate):
+        """为单个设备使用泊松分布生成任务"""
+        # 使用泊松分布确定任务数量
+        num_tasks = np.random.poisson(arrival_rate)
+        
+        # 考虑设备负载限制
+        device_load = self.user_equipments[device_id].calculate_task_load()
+        if device_load > self.task_generation_config['device_load_threshold']:
+            # 设备过载，减少任务生成
+            reduction_factor = min(device_load / self.task_generation_config['device_load_threshold'], 3.0)
+            num_tasks = max(0, int(num_tasks / reduction_factor))
+        
+        # 检查系统总负载
+        system_load = self._calculate_system_load()
+        if system_load > self.task_generation_config['system_load_threshold']:
+            num_tasks = 0  # 系统过载，停止生成
+        
+        if num_tasks == 0:
+            return []
+        
+        # 生成具体任务
+        tasks = []
+        for i in range(num_tasks):
+            task_data = self._generate_realistic_task(device_id)
+            tasks.append(task_data)
+        
+        return tasks
+    
+    def _generate_realistic_task(self, device_id):
+        """生成符合真实场景的任务"""
+        # 1. 选择应用类型
+        app_types = list(self.task_generation_config['application_mix'].keys())
+        app_probs = list(self.task_generation_config['application_mix'].values())
+        app_type = np.random.choice(app_types, p=app_probs)
+        
+        # 2. 获取应用配置
+        app_config = self.application_task_configs[app_type]
+        
+        # 3. 生成任务大小
+        min_size, max_size = app_config['size_range']
+        data_size = np.random.uniform(min_size, max_size)
+        
+        # 4. 计算CPU周期需求
+        cpu_cycles = data_size * app_config['compute_density']
+        
+        # 5. 设置截止时间
+        deadline = self._calculate_realistic_deadline(app_type, data_size, cpu_cycles, device_id)
+        
+        # 6. 生成全局唯一任务ID
+        task_id = f"{device_id}_{self.episode_step}_{self.task_completion_stats['total_tasks_generated']}"
+        
+        return {
+            'task_id': task_id,
+            'device_id': device_id,
+            'type': app_type,
+            'data_size': data_size,
+            'cpu_cycles': cpu_cycles,
+            'deadline': deadline,
+            'priority': app_config['priority'],
+            'arrival_time': self.global_time,
+            'application_type': app_type
+        }
+    
+    def _calculate_realistic_deadline(self, app_type, data_size, cpu_cycles, device_id):
+        """计算符合真实场景的截止时间"""
+        # 1. 获取基础截止时间因子
+        base_factors = self.deadline_config['base_factors'][app_type]
+        base_factor = np.random.uniform(*base_factors)
+        
+        # 2. 计算本地执行时间（使用该设备的CPU频率）
+        device_cpu_freq = self.user_equipments[device_id].cpu_frequency * 1e9  # Hz
+        local_execution_time = cpu_cycles / device_cpu_freq
+        
+        # 3. 基础截止时间
+        base_deadline = local_execution_time * base_factor
+        
+        # 4. 负载调整
+        if self.deadline_config['load_adjustment']:
+            system_load = self._calculate_system_load()
+            if system_load > self.task_generation_config['system_load_threshold'] * 0.7:
+                # 系统负载较高，适当放宽截止时间
+                congestion_factor = self.deadline_config['congestion_penalty']
+                base_deadline *= congestion_factor
+        
+        # 5. 确保最小截止时间
+        final_deadline = max(base_deadline, self.deadline_config['min_deadline'])
+        
+        return final_deadline
+
+    def _calculate_system_load(self):
+        """计算系统整体负载"""
+        total_load = 0.0
+        
+        # UE负载
+        for ue in self.user_equipments:
+            total_load += ue.calculate_task_load()
+            
+        # ES负载
+        for es in self.edge_servers:
+            total_load += es.calculate_task_load()
+            
+        return total_load
 
     def step(self, actions, llm_actions=None):
         """
         执行一步动作 - 考虑差异化通信延迟
         
         Args:
-            actions: Agent的动作 shape=(num_devices, 4) [α1, α2, α3, edge_id]
+            actions: Agent的动作 shape=(num_devices, 4) [α1, α2, α3, edge_id] 或 list
             llm_actions: LLM专家动作 shape=(num_devices, 4) 或 list
         
         Returns:
@@ -247,6 +544,10 @@ class CloudEdgeDeviceEnv(gym.Env):
         
         # 更新所有设备的任务执行状态
         self._update_all_devices(self.time_step_duration)
+        
+        # 🔧 确保actions是NumPy数组格式
+        if not isinstance(actions, np.ndarray):
+            actions = np.array(actions)
         
         # 2. 显示MADDPG动作解析过程
         print(f"\n🔄 MADDPG动作环境交互过程:")
@@ -267,16 +568,21 @@ class CloudEdgeDeviceEnv(gym.Env):
             print(f"  Device{i}: 原始[{alpha1:.3f}, {alpha2:.3f}, {alpha3:.3f}, {edge_id_raw:.3f}]")
             print(f"           → 解析为[本地:{alpha1_norm:.3f}, 边缘:{alpha2_norm:.3f}, 云端:{alpha3_norm:.3f}, Edge{edge_id}]")
         
-        # 2. 处理新任务的卸载决策
+        # 3. 处理新任务的卸载决策
         print(f"\n[Step {self.episode_step}] 🚀 执行MADDPG卸载决策...")
         rewards = np.zeros(self.num_devices)
         total_latencies = []
         total_energies = []
         communication_latencies = []
         computation_latencies = []
-        
+
         for i in range(self.num_devices):
-            action = actions[i] if len(actions.shape) > 1 else actions
+            # 🔧 安全地获取单个设备的动作
+            if len(actions.shape) > 1:
+                action = actions[i]
+            else:
+                action = actions
+            
             reward, metrics = self._execute_offloading_decision(i, action)
             rewards[i] = reward
             
@@ -299,16 +605,16 @@ class CloudEdgeDeviceEnv(gym.Env):
         print(f"  平均奖励: {np.mean(rewards):.3f}")
         print(f"  奖励范围: [{np.min(rewards):.3f}, {np.max(rewards):.3f}]")
 
-        # 3. 检查终止条件
+        # 4. 检查终止条件
         max_steps_reached = self.episode_step >= self.max_steps
         terminated = False
         truncated = max_steps_reached
 
-        # 4. 如果还没结束，为下一步生成新任务
+        # 5. 如果还没结束，为下一步生成新任务
         if not (terminated or truncated):
             self._generate_new_tasks()
 
-        # 5. 打印当前状态总结
+        # 6. 打印当前状态总结
         self._print_step_summary()
 
         # 构建info字典
@@ -346,6 +652,29 @@ class CloudEdgeDeviceEnv(gym.Env):
 
     def _execute_offloading_decision(self, device_idx, action):
         """执行单个设备的卸载决策 - 考虑差异化通信延迟"""
+        # 🆕 检查是否有任务需要处理
+        if self.current_tasks is None or device_idx >= len(self.current_tasks):
+            # 没有任务，返回零奖励
+            return 0.0, {
+                'total_latency': 0.0,
+                'total_energy': 0.0, 
+                'communication_latency': 0.0,
+                'computation_latency': 0.0,
+                'local_baseline': (0.0, 0.0)
+            }
+        
+        task = self.current_tasks[device_idx]
+        if task is None:
+            # 该设备没有任务，返回零奖励
+            print(f"  Device{device_idx}: 无任务分配")
+            return 0.0, {
+                'total_latency': 0.0,
+                'total_energy': 0.0,
+                'communication_latency': 0.0, 
+                'computation_latency': 0.0,
+                'local_baseline': (0.0, 0.0)
+            }
+        
         # 解析动作
         alpha1, alpha2, alpha3, edge_id = action
         edge_id = int(np.clip(edge_id, 0, self.num_edges - 1))
@@ -359,7 +688,6 @@ class CloudEdgeDeviceEnv(gym.Env):
             
         # 获取设备和任务
         ue = self.user_equipments[device_idx]
-        task = self.current_tasks[device_idx]
         task.set_split_ratios(alpha1, alpha2, alpha3)
         
         print(f"  Device{device_idx}: Task{task.task_id} 分割比例 "
@@ -509,49 +837,75 @@ class CloudEdgeDeviceEnv(gym.Env):
     def _calculate_reward(self, offload_latency, offload_energy, 
                          baseline_latency, baseline_energy, deadline):
         """
-        计算奖励函数 - 考虑差异化通信延迟的影响
+        计算奖励函数 - 修复数值爆炸问题
         
         奖励设计：
-        1. 时延改善奖励
-        2. 能耗改善奖励  
-        3. 截止时间满足奖励
-        4. 负载均衡奖励
-        5. 通信效率奖励（鼓励减少不必要的云端卸载）
+        1. 时延改善奖励 (权重: 8.0)
+        2. 能耗改善奖励 (权重: 6.0)
+        3. 截止时间满足奖励 (±5.0/-10.0)
+        4. 负载均衡奖励 (权重: 0.1, 有数值保护)
         """
-        # 基础奖励计算
-        if baseline_latency > 0:
+        # 基础奖励计算 - 添加数值保护
+        if baseline_latency > 1e-6:  # 防止除零和极小值
             latency_improvement = (baseline_latency - offload_latency) / baseline_latency
+            latency_improvement = np.clip(latency_improvement, -10.0, 10.0)  # 限制改善比例
         else:
             latency_improvement = 0
             
-        if baseline_energy > 0:
+        if baseline_energy > 1e-6:  # 防止除零和极小值
             energy_improvement = (baseline_energy - offload_energy) / baseline_energy
+            energy_improvement = np.clip(energy_improvement, -10.0, 10.0)  # 限制改善比例
         else:
             energy_improvement = 0
             
-        # 时延和能耗奖励
-        latency_reward = latency_improvement * 10.0
-        energy_reward = energy_improvement * 5.0
+        # 时延和能耗奖励 - 调整权重
+        latency_reward = latency_improvement * 8.0
+        energy_reward = energy_improvement * 6.0
         
-        # 截止时间满足奖励
+        # 截止时间满足奖励 - 添加数值保护
         if offload_latency <= deadline:
             deadline_reward = 5.0
         else:
             overtime_ratio = (offload_latency - deadline) / deadline
+            overtime_ratio = min(overtime_ratio, 100.0)  # 限制最大超时比例
             deadline_reward = -10.0 * overtime_ratio
         
-        # 负载均衡奖励
+        # 负载均衡奖励 - 重新设计，添加强数值保护
         edge_loads = [es.calculate_task_load() for es in self.edge_servers]
         if len(edge_loads) > 1:
-            load_variance = np.var(edge_loads)
-            balance_reward = -load_variance * 0.01
+            # 使用标准差而非方差，避免平方放大
+            load_std = np.std(edge_loads)
+            load_std = min(load_std, 1000.0)  # 限制最大标准差
+            
+            # 使用归一化的负载均衡指标
+            max_load = max(edge_loads) if edge_loads else 1.0
+            if max_load > 0:
+                normalized_std = load_std / max_load
+                balance_reward = -normalized_std * 2.0  # 调整权重和公式
+            else:
+                balance_reward = 0.0
+                
+            # 严格限制负载均衡奖励范围
+            balance_reward = np.clip(balance_reward, -20.0, 0.0)
         else:
-            balance_reward = 0
+            balance_reward = 0.0
         
-        # 总奖励
+        # 总奖励计算 - 添加最终数值保护
         total_reward = latency_reward + energy_reward + deadline_reward + balance_reward
         
-        return total_reward
+        # 🛡️ 关键修复：严格限制总奖励范围
+        total_reward = np.clip(total_reward, -100.0, 100.0)
+        
+        # 🆕 调试信息（可选，训练时可注释掉）
+        if abs(total_reward) > 50.0 or any(abs(r) > 50.0 for r in [latency_reward, energy_reward, deadline_reward, balance_reward]):
+            print(f"  [REWARD_DEBUG] 异常奖励检测:")
+            print(f"    时延奖励: {latency_reward:.3f} (改善: {latency_improvement:.3f})")
+            print(f"    能耗奖励: {energy_reward:.3f} (改善: {energy_improvement:.3f})")
+            print(f"    截止奖励: {deadline_reward:.3f}")
+            print(f"    负载奖励: {balance_reward:.3f} (负载: {edge_loads})")
+            print(f"    总奖励: {total_reward:.3f}")
+        
+        return float(total_reward)
 
     def _print_step_summary(self):
         """打印当前步骤的状态总结"""
@@ -601,39 +955,44 @@ class CloudEdgeDeviceEnv(gym.Env):
             
         # 4. 任务状态 (每个任务6个特征)
         if self.current_tasks:
-            for task in self.current_tasks:
-                # 任务类型归一化
-                if task.task_type == 'small':
-                    task_type_norm = 0.0
-                elif task.task_type == 'medium':
-                    task_type_norm = 0.5
-                else:
-                    task_type_norm = 1.0
+            for i, task in enumerate(self.current_tasks):
+                if task is not None:
+                    # 任务类型归一化
+                    if task.task_type == 'small':
+                        task_type_norm = 0.0
+                    elif task.task_type == 'medium':
+                        task_type_norm = 0.5
+                    else:
+                        task_type_norm = 1.0
+                        
+                    # 数据大小归一化 - 修复属性名称
+                    data_size_norm = min(task.task_data_size / 200.0, 1.0)
                     
-                # 数据大小归一化 - 修复属性名称
-                data_size_norm = min(task.task_data_size / 200.0, 1.0)
+                    # CPU周期归一化 - 修复属性名称
+                    workload_norm = min(task.task_workload / 1e10, 1.0)
+                    
+                    # 截止时间归一化
+                    deadline_norm = min(task.deadline / 100.0, 1.0)
+                    
+                    # 剩余时间归一化
+                    remaining_time = max(task.deadline - self.global_time, 0)
+                    remaining_time_norm = min(remaining_time / 100.0, 1.0)
+                    
+                    # 紧急程度
+                    urgency = 1.0 - (remaining_time / task.deadline if task.deadline > 0 else 0)
+                    
+                    task_state = [
+                        task_type_norm,
+                        data_size_norm,
+                        workload_norm,
+                        deadline_norm,
+                        remaining_time_norm,
+                        urgency
+                    ]
+                else:
+                    # 没有任务，填充零
+                    task_state = [0.0] * 6
                 
-                # CPU周期归一化 - 修复属性名称
-                workload_norm = min(task.task_workload / 1e10, 1.0)
-                
-                # 截止时间归一化
-                deadline_norm = min(task.deadline / 100.0, 1.0)
-                
-                # 剩余时间归一化
-                remaining_time = max(task.deadline - self.global_time, 0)
-                remaining_time_norm = min(remaining_time / 100.0, 1.0)
-                
-                # 紧急程度
-                urgency = 1.0 - (remaining_time / task.deadline if task.deadline > 0 else 0)
-                
-                task_state = [
-                    task_type_norm,
-                    data_size_norm,
-                    workload_norm,
-                    deadline_norm,
-                    remaining_time_norm,
-                    urgency
-                ]
                 observation.extend(task_state)
         else:
             # 如果没有任务，填充零
@@ -691,8 +1050,17 @@ class CloudEdgeDeviceEnv(gym.Env):
         return agent_state.astype(np.float32)
 
     def get_agent_state_dim(self):
-        """获取单个Agent的状态维度"""
-        return self.agent_state_dim
+        """获取单个Agent的状态维度
+        
+        Agent状态结构：
+        - 自己UE状态: 3维 (CPU频率, 电池, 任务负载)
+        - 所有ES状态: 2×5=10维 (CPU频率, 任务负载)
+        - CS状态: 1维 (CPU频率)
+        - 自己任务状态: 6维 (任务类型, 数据大小, CPU周期, 截止时间, 剩余时间, 紧急程度)
+        
+        总计: 3 + 10 + 1 + 6 = 20维
+        """
+        return 3 + (self.num_edges * 2) + (self.num_clouds * 1) + 6
 
     def get_device_info(self):
         """获取设备信息（用于LLM咨询）"""
@@ -736,16 +1104,18 @@ class CloudEdgeDeviceEnv(gym.Env):
         tasks_info = []
         if self.current_tasks:
             for i, task in enumerate(self.current_tasks):
-                info = {
-                    'task_id': task.task_id,
-                    'device_id': i,
-                    'task_type': task.task_type,
-                    'data_size': task.task_data_size,  # 修复属性名称
-                    'cpu_cycles': task.task_workload,     # 修复属性名称
-                    'deadline': task.deadline,
-                    'remaining_time': max(task.deadline - self.global_time, 0)
-                }
-                tasks_info.append(info)
+                # 🔧 修复：过滤掉None任务
+                if task is not None:
+                    info = {
+                        'task_id': task.task_id,
+                        'device_id': i,
+                        'task_type': task.task_type,
+                        'data_size': task.task_data_size,  # 修复属性名称
+                        'cpu_cycles': task.task_workload,     # 修复属性名称
+                        'deadline': task.deadline,
+                        'remaining_time': max(task.deadline - self.global_time, 0)
+                    }
+                    tasks_info.append(info)
         return tasks_info
 
     def render(self, mode='human'):
@@ -787,6 +1157,10 @@ class CloudEdgeDeviceEnv(gym.Env):
             task: 任务对象
             actual_latency: 实际完成延迟
         """
+        # 🆕 更新并发任务计数
+        if self.task_generation_state['total_concurrent_tasks'] > 0:
+            self.task_generation_state['total_concurrent_tasks'] -= 1
+        
         # 记录任务完成时间
         completion_time = self.global_time + actual_latency
         self.task_completion_stats['completion_times'].append(completion_time)

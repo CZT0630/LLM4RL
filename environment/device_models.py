@@ -32,7 +32,7 @@ class UserEquipment:
         
         # CPU频率：0.5-1.0 GHz异构配置
         if cpu_frequency is None:
-            self.cpu_frequency = random.uniform(0.5, 1.0)  # GHz
+            self.cpu_frequency = random.uniform(0.5, 2.0)  # GHz
         else:
             self.cpu_frequency = cpu_frequency
             
