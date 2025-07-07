@@ -1,6 +1,7 @@
 # environment/task_generator.py
 import numpy as np
 import random
+import time
 
 
 class TaskGenerator:
@@ -31,15 +32,52 @@ class TaskGenerator:
             'large': (1.2, 2.0)     # 大任务：1.2-2倍本地执行时间
         }
         
+        # 新增泊松到达过程配置
+        self.poisson_config = {
+            'base_arrival_rate': 0.5,  # 基础到达率（每步每设备的平均任务数）
+            'time_pattern_enabled': False,  # 默认不启用时间模式
+            'pattern_cycle': 20,     # 时间模式周期（步数）
+            'peak_hours': [5, 15],   # 高峰时段（在周期内的位置）
+            'peak_multiplier': 2.0,  # 高峰期到达率倍数
+            'low_multiplier': 0.5,   # 低峰期到达率倍数
+        }
+        
+        # 初始化当前状态
+        self.current_step = 0
+        self.current_pattern_phase = 'normal'  # 'normal', 'peak', 'low'
+        
+        # 如果提供了配置，更新默认值
+        if config:
+            if 'task_types' in config:
+                for task_type, properties in config['task_types'].items():
+                    if 'data_range' in properties and task_type in self.task_sizes:
+                        self.task_sizes[task_type] = tuple(properties['data_range'])
+                    if 'probability' in properties and task_type in self.task_type_weights:
+                        self.task_type_weights[task_type] = properties['probability']
+                    if 'deadline_multiplier' in properties and task_type in self.deadline_factors:
+                        min_factor = properties['deadline_multiplier'] * 0.8
+                        max_factor = properties['deadline_multiplier'] * 1.2
+                        self.deadline_factors[task_type] = (min_factor, max_factor)
+            
+            if 'processing_density' in config:
+                self.processing_density = config['processing_density']
+            
+            # 更新泊松配置
+            if 'poisson_config' in config:
+                for key, value in config['poisson_config'].items():
+                    if key in self.poisson_config:
+                        self.poisson_config[key] = value
 
-    
-    def generate_single_task(self, task_id=0):
+    def generate_single_task(self, task_id=0, device_id=0):
         """生成单个任务"""
         # 选择任务类型
         task_type = np.random.choice(
             list(self.task_type_weights.keys()),
             p=list(self.task_type_weights.values())
         )
+        
+        # 确保task_type是普通字符串，不是numpy字符串
+        task_type = str(task_type)
         
         # 生成数据大小
         min_size, max_size = self.task_sizes[task_type]
@@ -59,12 +97,81 @@ class TaskGenerator:
         deadline = local_execution_time * deadline_factor
         
         return {
-            'task_id': task_id,
+            'task_id': f"{device_id}_{self.current_step}_{task_id}",
+            'device_id': device_id,
             'type': task_type,
             'data_size': data_size,       # 数据大小 (MB)
-            'cpu_cycles': cpu_cycles,           # CPU周期需求 (cycles)
-            'deadline': deadline,               # 截止时间 (秒)
+            'cpu_cycles': cpu_cycles,     # CPU周期需求 (cycles)
+            'deadline': deadline,         # 截止时间 (秒)
+            'arrival_time': time.time()   # 到达时间戳
         }
+    
+    def generate_poisson_tasks(self, num_devices, step=None):
+        """
+        使用泊松分布生成任务，支持时间模式
+        
+        参数:
+            num_devices: 设备数量
+            step: 当前步数（如果不提供，则使用内部计数器）
+            
+        返回:
+            一个字典，键为设备ID，值为该设备的任务列表
+        """
+        if step is not None:
+            self.current_step = step
+        else:
+            self.current_step += 1
+        
+        # 计算当前时间模式倍率
+        arrival_rate_multiplier = self._calculate_time_pattern_multiplier()
+        
+        # 计算最终到达率
+        final_arrival_rate = self.poisson_config['base_arrival_rate'] * arrival_rate_multiplier
+        
+        # 按设备生成任务
+        device_tasks = {}
+        total_tasks = 0
+        
+        for device_id in range(num_devices):
+            # 使用泊松分布确定该设备的任务数
+            num_tasks = np.random.poisson(final_arrival_rate)
+            
+            if num_tasks > 0:
+                tasks = []
+                for i in range(num_tasks):
+                    task = self.generate_single_task(task_id=total_tasks+i, device_id=device_id)
+                    tasks.append(task)
+                
+                device_tasks[device_id] = tasks
+                total_tasks += num_tasks
+            else:
+                device_tasks[device_id] = []
+        
+        print(f"[Step {self.current_step}] 生成任务统计: 时间模式='{self.current_pattern_phase}',"
+              f" 倍率={arrival_rate_multiplier:.2f}, 总任务数={total_tasks}")
+        
+        return device_tasks
+    
+    def _calculate_time_pattern_multiplier(self):
+        """计算时间模式倍率"""
+        if not self.poisson_config['time_pattern_enabled']:
+            return 1.0
+            
+        # 计算在周期中的位置
+        cycle_position = self.current_step % self.poisson_config['pattern_cycle']
+        
+        # 判断当前是否在高峰期
+        is_peak = any(abs(cycle_position - peak) <= 2 for peak in self.poisson_config['peak_hours'])
+        
+        if is_peak:
+            self.current_pattern_phase = 'peak'
+            return self.poisson_config['peak_multiplier']
+        elif cycle_position < 5:  # 周期前25%为低峰期
+            self.current_pattern_phase = 'low'
+            return self.poisson_config['low_multiplier']
+        else:
+            self.current_pattern_phase = 'normal'
+            return 1.0
     
     def generate_tasks(self, num_tasks):
         """生成多个任务"""
@@ -143,6 +250,9 @@ class Task:
         self.task_data_size = task_data.get('data_size', task_data.get('data_size', 50))
         self.task_workload = task_data.get('cpu_cycles', task_data.get('computation', 50) * 1e6)
         self.deadline = task_data.get('deadline', 10.0)
+        self.device_id = task_data.get('device_id', 0)
+        self.creation_step = 0  # 会在环境中设置
+        self.arrival_time = task_data.get('arrival_time', time.time())
         
         # 任务分割比例 [α1, α2, α3] 其中 α1+α2+α3=1
         self.split_ratios = None
@@ -189,4 +299,7 @@ class Task:
             'cpu_cycles': self.task_workload,
             'deadline': self.deadline,
             'split_ratios': self.split_ratios,
+            'device_id': self.device_id,
+            'creation_step': self.creation_step,
+            'arrival_time': self.arrival_time
         }

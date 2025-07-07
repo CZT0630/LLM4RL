@@ -27,6 +27,7 @@ from llm_assistant.response_parser import ResponseParser
 from utils.config import load_config
 from utils.path_manager import get_path_manager
 from utils.csv_saver import save_training_metrics_csv
+from utils.metrics import MetricsTracker
 # from utils.plotting import plot_training_curves
 # from utils.metrics import calculate_episode_metrics
 
@@ -243,11 +244,8 @@ def train_llm_maddpg_complete(config_path):
     log_frequency = config['training']['log_frequency']
     warm_up_episodes = config['training']['warm_up_episodes']
     
-    # 记录指标
-    episode_rewards = []
-    episode_latencies = []
-    episode_energies = []
-    episode_completion_rates = []
+    # 记录指标 - 使用MetricsTracker类保持与其他算法一致
+    metrics_tracker = MetricsTracker()
     training_losses = []
     
     # 全局step计数器
@@ -299,7 +297,7 @@ def train_llm_maddpg_complete(config_path):
         
         # 重置环境
         state, _ = env.reset()
-        episode_reward = 0
+        step_means = []  # 新增：收集每个step所有智能体reward的均值
         episode_latencies = []  # 🆕 收集每步的延迟
         episode_energies = []   # 🆕 收集每步的能耗
         
@@ -392,7 +390,8 @@ def train_llm_maddpg_complete(config_path):
             
             # 更新状态和奖励
             state = next_state
-            episode_reward += np.mean(rewards)
+            # 记录本step所有智能体reward的均值
+            step_means.append(np.mean(rewards))
             
             # 🆕 从info中提取延迟和能耗，过滤零值
             if info:
@@ -413,10 +412,10 @@ def train_llm_maddpg_complete(config_path):
                 logger.info(f"Episode {episode + 1} 在第{step + 1}步终止")
                 break
         
-        # Episode结束，记录指标
-        episode_rewards.append(episode_reward)
+        # 统一episode reward计算方式
+        episode_reward = np.mean(step_means) if step_means else 0.0
         
-        # Episode 结束，统计指标
+        # Episode结束，记录指标 - 使用MetricsTracker保持与其他算法一致
         # 使用实际任务完成率而不是固定值
         completion_stats = env.get_task_completion_rate()
         episode_completion_rate = completion_stats.get('on_time_completion_rate', 0.0)
@@ -425,23 +424,18 @@ def train_llm_maddpg_complete(config_path):
         avg_latency = np.mean(episode_latencies) if episode_latencies else 0.0
         avg_energy = np.mean(episode_energies) if episode_energies else 0.0
         
-        # 添加到对应的列表中用于最终保存
-        episode_latencies.append(avg_latency)
-        episode_energies.append(avg_energy)
-        episode_completion_rates.append(episode_completion_rate)
+        # 使用MetricsTracker记录episode指标
+        metrics_tracker.add_episode(episode_reward, avg_latency, avg_energy, use_llm_this_episode)
         
-        # 🆕 优化进度打印
+        # 🆕 优化进度打印 - 使用MetricsTracker获取统计数据
         if (episode + 1) % log_frequency == 0:
-            recent_reward = np.mean(episode_rewards[-log_frequency:])
-            recent_latency = np.mean(episode_latencies[-log_frequency:]) if episode_latencies else 0
-            recent_energy = np.mean(episode_energies[-log_frequency:]) if episode_energies else 0
-            recent_completion = np.mean(episode_completion_rates[-log_frequency:]) if episode_completion_rates else 0
+            avg_metrics = metrics_tracker.get_average_metrics(last_n=log_frequency)
             
             logger.info(f"\nEpisode {episode + 1} 阶段性总结 ({stage}):")
-            logger.info(f"  最近{log_frequency}轮平均奖励: {recent_reward:.3f}")
-            logger.info(f"  最近{log_frequency}轮平均时延: {recent_latency:.3f}s")
-            logger.info(f"  最近{log_frequency}轮平均能耗: {recent_energy:.3f}J")
-            logger.info(f"  最近{log_frequency}轮按时完成率: {recent_completion:.3f}")
+            logger.info(f"  最近{log_frequency}轮平均奖励: {avg_metrics['avg_reward']:.3f}")
+            logger.info(f"  最近{log_frequency}轮平均时延: {avg_metrics['avg_delay']:.3f}s")
+            logger.info(f"  最近{log_frequency}轮平均能耗: {avg_metrics['avg_energy']:.3f}J")
+            logger.info(f"  LLM使用比例: {avg_metrics['llm_usage_ratio']:.3f}")
             
             # 显示详细的任务完成统计
             if info and 'task_completion_stats' in info:
@@ -456,9 +450,9 @@ def train_llm_maddpg_complete(config_path):
             logger.info(f"  全局步数: {global_step_count}")
             logger.info(f"  缓冲区大小: {len(shared_buffer)}")
             
-            # 🆕 收敛检测
-            if not is_warm_up and len(episode_rewards) >= 50:
-                recent_rewards = episode_rewards[-50:]
+            # 🆕 收敛检测 - 使用MetricsTracker数据
+            if not is_warm_up and len(metrics_tracker.episode_rewards) >= 50:
+                recent_rewards = metrics_tracker.episode_rewards[-50:]
                 reward_std = np.std(recent_rewards)
                 convergence_threshold = config['training']['convergence_threshold']
                 if reward_std < convergence_threshold:
@@ -480,11 +474,15 @@ def train_llm_maddpg_complete(config_path):
     # 保存训练统计数据
     logger.info("保存训练统计数据...")
     
+    # 计算所有episode的平均完成率作为代表值
+    final_completion_stats = env.get_task_completion_rate()
+    avg_completion_rate = final_completion_stats.get('on_time_completion_rate', 0.0)
+    
     training_data = {
-        'episode_rewards': episode_rewards,
-        'episode_latencies': episode_latencies,
-        'episode_energies': episode_energies,
-        'episode_completion_rates': episode_completion_rates,
+        'episode_rewards': metrics_tracker.episode_rewards,
+        'episode_latencies': metrics_tracker.episode_delays,
+        'episode_energies': metrics_tracker.episode_energy,
+        'episode_completion_rates': [avg_completion_rate] * len(metrics_tracker.episode_rewards),
         'training_losses': training_losses,
         'global_step_count': global_step_count,
         'config': config
@@ -499,10 +497,10 @@ def train_llm_maddpg_complete(config_path):
     logger.info("保存训练指标到CSV表格...")
     try:
         csv_filepath = save_training_metrics_csv(
-            episode_rewards=episode_rewards,
-            episode_latencies=episode_latencies,
-            episode_energies=episode_energies,
-            episode_completion_rates=episode_completion_rates,
+            episode_rewards=metrics_tracker.episode_rewards,
+            episode_latencies=metrics_tracker.episode_delays,
+            episode_energies=metrics_tracker.episode_energy,
+            episode_completion_rates=[avg_completion_rate] * len(metrics_tracker.episode_rewards),
             algorithm_name="LLM_MADDPG",
             save_dir=data_dir
         )
@@ -517,34 +515,34 @@ def train_llm_maddpg_complete(config_path):
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     
     # 奖励曲线
-    axes[0, 0].plot(episode_rewards)
+    axes[0, 0].plot(metrics_tracker.episode_rewards)
     axes[0, 0].set_title('Episode Rewards')
     axes[0, 0].set_xlabel('Episode')
     axes[0, 0].set_ylabel('Reward')
     axes[0, 0].grid(True)
     
     # 时延曲线
-    if episode_latencies:
-        axes[0, 1].plot(episode_latencies)
+    if metrics_tracker.episode_delays:
+        axes[0, 1].plot(metrics_tracker.episode_delays)
         axes[0, 1].set_title('Episode Average Latency')
         axes[0, 1].set_xlabel('Episode')
         axes[0, 1].set_ylabel('Latency (s)')
         axes[0, 1].grid(True)
     
     # 能耗曲线
-    if episode_energies:
-        axes[1, 0].plot(episode_energies)
+    if metrics_tracker.episode_energy:
+        axes[1, 0].plot(metrics_tracker.episode_energy)
         axes[1, 0].set_title('Episode Average Energy')
         axes[1, 0].set_xlabel('Episode')
         axes[1, 0].set_ylabel('Energy (J)')
         axes[1, 0].grid(True)
     
-    # 任务完成率曲线
-    if episode_completion_rates:
-        axes[1, 1].plot(episode_completion_rates)
-        axes[1, 1].set_title('Task Completion Rate')
+    # LLM使用比例曲线
+    if metrics_tracker.llm_used:
+        axes[1, 1].plot(metrics_tracker.llm_used)
+        axes[1, 1].set_title('LLM Usage Ratio')
         axes[1, 1].set_xlabel('Episode')
-        axes[1, 1].set_ylabel('Completion Rate')
+        axes[1, 1].set_ylabel('LLM Usage')
         axes[1, 1].grid(True)
     
     plt.tight_layout()
@@ -555,10 +553,10 @@ def train_llm_maddpg_complete(config_path):
     logger.info(f"训练完成！")
     logger.info(f"总Episodes: {num_episodes}")
     logger.info(f"总Steps: {global_step_count}")
-    logger.info(f"最终平均奖励: {np.mean(episode_rewards[-50:]):.3f}")
-    logger.info(f"最终平均时延: {np.mean(episode_latencies[-50:]):.3f}s")
-    logger.info(f"最终平均能耗: {np.mean(episode_energies[-50:]):.3f}J")
-    logger.info(f"最终任务完成率: {np.mean(episode_completion_rates[-50:]):.3f}")
+    logger.info(f"最终平均奖励: {np.mean(metrics_tracker.episode_rewards[-50:]):.3f}")
+    logger.info(f"最终平均时延: {np.mean(metrics_tracker.episode_delays[-50:]):.3f}s")
+    logger.info(f"最终平均能耗: {np.mean(metrics_tracker.episode_energy[-50:]):.3f}J")
+    logger.info(f"最终LLM使用比例: {np.mean(metrics_tracker.llm_used[-50:]):.3f}")
     logger.info(f"模型保存路径: {model_dir}")
     logger.info(f"数据保存路径: {data_dir}")
     logger.info(f"📁 所有结果保存在: {path_manager.get_experiment_dir()}")
@@ -566,10 +564,10 @@ def train_llm_maddpg_complete(config_path):
     # 返回完整的训练结果
     return {
         'algorithm': 'LLM+MADDPG',
-        'episode_rewards': episode_rewards,
-        'episode_latencies': episode_latencies,
-        'episode_energies': episode_energies,
-        'episode_completion_rates': episode_completion_rates,
+        'episode_rewards': metrics_tracker.episode_rewards,
+        'episode_latencies': metrics_tracker.episode_delays,
+        'episode_energies': metrics_tracker.episode_energy,
+        'episode_completion_rates': [avg_completion_rate] * len(metrics_tracker.episode_rewards),
         'training_losses': training_losses,
         'global_step_count': global_step_count,
         'config': config,

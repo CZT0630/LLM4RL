@@ -308,44 +308,45 @@ class CloudEdgeDeviceEnv(gym.Env):
         return self._get_observation(), {}
 
     def _generate_new_tasks(self):
-        """🚀 真实边缘环境任务生成策略 - 泊松分布 + 时间模式 + 突发任务"""
-        print(f"\n[Step {self.episode_step}] 🌟 真实边缘环境任务生成...")
+        """🚀 使用基础任务生成器生成任务 - 泊松分布 + 时间模式"""
+        print(f"\n[Step {self.episode_step}] 🌟 生成新任务...")
         
-        # 1. 计算当前时间模式倍率
-        pattern_multiplier = self._calculate_time_pattern_multiplier()
-        
-        # 2. 检查和处理突发任务
-        burst_multiplier = self._handle_burst_events()
-        
-        # 3. 计算最终到达率
-        final_arrival_rate = (self.task_generation_config['base_arrival_rate'] * 
-                             pattern_multiplier * burst_multiplier)
-        
-        print(f"   时间模式倍率: {pattern_multiplier:.2f}, 突发倍率: {burst_multiplier:.2f}")
-        print(f"   最终到达率: {final_arrival_rate:.2f} tasks/device/step")
-        
-        # 4. 生成任务
-        task_data_list = []
-        total_generated = 0
-        
-        for device_id in range(self.num_devices):
-            # 使用泊松分布确定该设备的任务数
-            device_tasks = self._generate_poisson_tasks(device_id, final_arrival_rate)
+        # 使用基础任务生成器的泊松生成逻辑
+        if not hasattr(self, 'task_generator'):
+            # 初始化任务生成器
+            from environment.task_generator import TaskGenerator
             
-            if device_tasks:
-                total_generated += len(device_tasks)
-                task_data_list.extend(device_tasks)
+            # 从配置中提取任务生成器相关配置
+            task_config = {}
+            if 'tasks' in self.config:
+                task_config = self.config['tasks']
             
-            # 为当前设备填充任务（如果有多个任务，取第一个；如果没有，设为None）
-            device_task = device_tasks[0] if device_tasks else None
+            # 配置泊松参数
+            poisson_config = {
+                'base_arrival_rate': self.task_generation_config.get('base_arrival_rate', 0.5),
+                'time_pattern_enabled': self.task_generation_config.get('time_pattern_enabled', True),
+                'pattern_cycle': self.task_generation_config.get('pattern_cycle', 20),
+                'peak_hours': self.task_generation_config.get('peak_hours', [5, 15]),
+                'peak_multiplier': self.task_generation_config.get('peak_multiplier', 2.0),
+                'low_multiplier': self.task_generation_config.get('low_multiplier', 0.5),
+            }
             
-        # 5. 创建任务对象
+            task_config['poisson_config'] = poisson_config
+            self.task_generator = TaskGenerator(task_config)
+        
+        # 使用基础任务生成器生成任务
+        device_tasks_dict = self.task_generator.generate_poisson_tasks(
+            num_devices=self.num_devices,
+            step=self.episode_step
+        )
+        
+        # 创建任务对象
         self.current_tasks = []
-        task_index = 0
-        
         for device_id in range(self.num_devices):
-            if task_index < len(task_data_list) and task_data_list[task_index].get('device_id') == device_id:
-                task = Task(task_data_list[task_index])
+            if device_id in device_tasks_dict and device_tasks_dict[device_id]:
+                # 取该设备的第一个任务（如果有多个，只保留第一个）
+                task_data = device_tasks_dict[device_id][0]
+                task = Task(task_data)
                 task.creation_step = self.episode_step
                 self.current_tasks.append(task)
                 
@@ -354,25 +355,27 @@ class CloudEdgeDeviceEnv(gym.Env):
                 self.task_generation_state['total_concurrent_tasks'] += 1
                 self.task_generation_state['daily_task_count'] += 1
                 
-                task_index += 1
+                # 如果该设备有多个任务，打印提示（仅测试用）
+                if len(device_tasks_dict[device_id]) > 1:
+                    print(f"   设备 {device_id} 有 {len(device_tasks_dict[device_id])} 个任务，只保留第一个")
             else:
                 self.current_tasks.append(None)
         
-        # 6. 更新生成历史
-        self.task_generation_state['generation_history'].append({
-            'step': self.episode_step,
-            'total_generated': total_generated,
-            'pattern_phase': self.task_generation_state['current_pattern_phase'],
-            'burst_active': self.task_generation_state['burst_active'],
-            'arrival_rate': final_arrival_rate
-        })
-        
-        # 7. 打印生成结果
+        # 打印生成结果
         valid_tasks = sum(1 for task in self.current_tasks if task is not None)
         print(f"   📊 生成结果: {valid_tasks}/{self.num_devices}个设备有任务")
         print(f"   💼 当前并发任务: {self.task_generation_state['total_concurrent_tasks']}")
         print(f"   📈 累计生成任务: {self.task_completion_stats['total_tasks_generated']}")
         
+        # 更新生成历史（保持与原代码的兼容性）
+        self.task_generation_state['generation_history'].append({
+            'step': self.episode_step,
+            'total_generated': valid_tasks,
+            'pattern_phase': self.task_generator.current_pattern_phase,
+            'burst_active': self.task_generation_state.get('burst_active', False),
+            'arrival_rate': self.task_generator.poisson_config['base_arrival_rate']
+        })
+
     def _calculate_time_pattern_multiplier(self):
         """计算时间模式倍率"""
         if not self.task_generation_config['time_pattern_enabled']:
@@ -836,75 +839,11 @@ class CloudEdgeDeviceEnv(gym.Env):
 
     def _calculate_reward(self, offload_latency, offload_energy, 
                          baseline_latency, baseline_energy, deadline):
-        """
-        计算奖励函数 - 修复数值爆炸问题
-        
-        奖励设计：
-        1. 时延改善奖励 (权重: 8.0)
-        2. 能耗改善奖励 (权重: 6.0)
-        3. 截止时间满足奖励 (±5.0/-10.0)
-        4. 负载均衡奖励 (权重: 0.1, 有数值保护)
-        """
-        # 基础奖励计算 - 添加数值保护
-        if baseline_latency > 1e-6:  # 防止除零和极小值
-            latency_improvement = (baseline_latency - offload_latency) / baseline_latency
-            latency_improvement = np.clip(latency_improvement, -10.0, 10.0)  # 限制改善比例
-        else:
-            latency_improvement = 0
-            
-        if baseline_energy > 1e-6:  # 防止除零和极小值
-            energy_improvement = (baseline_energy - offload_energy) / baseline_energy
-            energy_improvement = np.clip(energy_improvement, -10.0, 10.0)  # 限制改善比例
-        else:
-            energy_improvement = 0
-            
-        # 时延和能耗奖励 - 调整权重
-        latency_reward = latency_improvement * 8.0
-        energy_reward = energy_improvement * 6.0
-        
-        # 截止时间满足奖励 - 添加数值保护
-        if offload_latency <= deadline:
-            deadline_reward = 5.0
-        else:
-            overtime_ratio = (offload_latency - deadline) / deadline
-            overtime_ratio = min(overtime_ratio, 100.0)  # 限制最大超时比例
-            deadline_reward = -10.0 * overtime_ratio
-        
-        # 负载均衡奖励 - 重新设计，添加强数值保护
-        edge_loads = [es.calculate_task_load() for es in self.edge_servers]
-        if len(edge_loads) > 1:
-            # 使用标准差而非方差，避免平方放大
-            load_std = np.std(edge_loads)
-            load_std = min(load_std, 1000.0)  # 限制最大标准差
-            
-            # 使用归一化的负载均衡指标
-            max_load = max(edge_loads) if edge_loads else 1.0
-            if max_load > 0:
-                normalized_std = load_std / max_load
-                balance_reward = -normalized_std * 2.0  # 调整权重和公式
-            else:
-                balance_reward = 0.0
-                
-            # 严格限制负载均衡奖励范围
-            balance_reward = np.clip(balance_reward, -20.0, 0.0)
-        else:
-            balance_reward = 0.0
-        
-        # 总奖励计算 - 添加最终数值保护
-        total_reward = latency_reward + energy_reward + deadline_reward + balance_reward
-        
-        # 🛡️ 关键修复：严格限制总奖励范围
-        total_reward = np.clip(total_reward, -100.0, 100.0)
-        
-        # 🆕 调试信息（可选，训练时可注释掉）
-        if abs(total_reward) > 50.0 or any(abs(r) > 50.0 for r in [latency_reward, energy_reward, deadline_reward, balance_reward]):
-            print(f"  [REWARD_DEBUG] 异常奖励检测:")
-            print(f"    时延奖励: {latency_reward:.3f} (改善: {latency_improvement:.3f})")
-            print(f"    能耗奖励: {energy_reward:.3f} (改善: {energy_improvement:.3f})")
-            print(f"    截止奖励: {deadline_reward:.3f}")
-            print(f"    负载奖励: {balance_reward:.3f} (负载: {edge_loads})")
-            print(f"    总奖励: {total_reward:.3f}")
-        
+        # 按用户要求，reward采用倒数加权公式
+        # 防止除零
+        latency_term = 1.0 / offload_latency if offload_latency > 1e-8 else 0.0
+        energy_term = 1.0 / offload_energy if offload_energy > 1e-8 else 0.0
+        total_reward = 0.5 * latency_term + 0.5 * energy_term
         return float(total_reward)
 
     def _print_step_summary(self):

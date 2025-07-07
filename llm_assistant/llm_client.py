@@ -471,7 +471,7 @@ class LLMClient:
             if not isinstance(strategy, dict):
                 converted.append(strategy)
                 continue
-                
+
             # 创建新的策略对象
             new_strategy = {}
             
@@ -535,7 +535,7 @@ class LLMClient:
                 "device_id": i,
                 "local_ratio": 1.0,
                 "edge_ratio": 0.0,
-                "cloud_ratio": 0.0,
+    "cloud_ratio": 0.0,
                 "target_edge": 0
             }
             for i in range(num_devices)

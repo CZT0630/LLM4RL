@@ -34,27 +34,27 @@ device_specs:
   user_equipment:
     count: 10
     # 简化属性：CPU频率 + 电池 + 任务负载
-    cpu_frequency_range: [0.5, 1.0]    # GHz，异构配置
+    cpu_frequency_range: [0.5, 0.8]    # GHz，异构配置
     battery_capacity: 4000              # mAh
     alpha_ue: 1e-26                     # J/cycle（能耗系数）
     transmission_power: 0.5             # W（传输功率）
     
     # 差异化通信配置
-    transmission_rate_to_edge: 1e9      # 1 Gbps（UE→边缘，6G无线）
-    transmission_rate_to_cloud: 100e6   # 100 Mbps（UE→云端，经边缘中转，总延迟更高）
+    transmission_rate_to_edge: 1e8      # 100Mbps（UE→边缘，6G无线）
+    transmission_rate_to_cloud: 1e9   # 1 Gbps（UE→云端，经边缘中转，总延迟更高）
     
   edge_servers:
     count: 5
     # 简化属性：CPU频率 + 任务负载
-    cpu_frequencies: [5, 6, 8, 10, 12]  # GHz，异构配置
+    cpu_frequencies: [5, 6, 7, 8, 9]  # GHz，异构配置
     alpha_es: 3e-26                     # J/cycle（能耗系数）
-    transmission_rate_to_cloud: 10e9    # 10 Gbps（边缘→云端）
+    transmission_rate_to_cloud: 1e9    # 1 Gbps（边缘→云端）
     
   cloud_servers:
     count: 1
     # 简化属性：仅CPU频率（资源无限）
     cpu_frequency: 20                   # GHz
-    alpha_cs: 1e-27                    # J/cycle（极低能耗）
+    alpha_cs: 3e-26                    # J/cycle（能耗系数）
     parallel_factor: 8.0               # 强大的并行处理能力
 
 # 网络配置（差异化通信延迟）
@@ -64,7 +64,7 @@ network:
   
   # 云端通信：慢速、高延迟（需要中转）  
   ue_to_cloud_total_rate: 100e6  # 100 Mbps (UE→边缘→云的总带宽)
-  edge_to_cloud_rate: 10e9    # 10 Gbps (边缘→云端，光纤)
+  edge_to_cloud_rate: 1e9    # 1 Gbps (边缘→云端，光纤)
   
   # 延迟模型说明：
   # - 边缘卸载：UE直接传输到边缘，低延迟
@@ -81,20 +81,29 @@ tasks:
     small:
       data_range: [1, 5]       # MB
       description: "传感器数据、文本处理"
-      probability: 0.4         # 40%概率
+      probability: 1         # 100%概率
       deadline_multiplier: 2.5 # 本地执行时间的2.5倍
       
     medium:
       data_range: [10, 50]     # MB  
       description: "短视频预处理、轻度图像识别"
-      probability: 0.4         # 40%概率
+      probability: 0.0         # 0%概率
       deadline_multiplier: 2.0 # 本地执行时间的2倍
       
     large:
       data_range: [100, 200]   # MB
       description: "高清视频分析、复杂AI推理"
-      probability: 0.2         # 20%概率
+      probability: 0.0           # 0%概率
       deadline_multiplier: 1.5 # 本地执行时间的1.5倍
+  
+  # 泊松到达过程配置
+  poisson_config:
+    base_arrival_rate: 0.6     # 基础到达率（每步每设备平均任务数）
+    time_pattern_enabled: false # 启用时间模式
+    pattern_cycle: 20          # 时间模式周期（步数）
+    peak_hours: [5, 15]        # 高峰时段（在周期内的位置）
+    peak_multiplier: 2.0       # 高峰期到达率倍数
+    low_multiplier: 0.5        # 低峰期到达率倍数
 
 # MADDPG算法配置
 maddpg:
@@ -106,18 +115,18 @@ maddpg:
   
   # 训练参数（优化版）
   max_episodes: 1000         # 训练轮数
-  max_steps: 100            # 每轮最大步数
+  max_steps: 200            # 每轮最大步数
   train_frequency: 50        # 🆕 每50步训练一次（平衡训练效率和稳定性）
   
   # 学习率
-  lr_actor: 0.001
-  lr_critic: 0.002
+  lr_actor: 0.0001
+  lr_critic: 0.0001
   gamma: 0.99               # 折扣因子
   tau: 0.005                # 软更新系数
   
   # 经验回放
-  buffer_size: 100000
-  batch_size: 64
+  buffer_size: 8192
+  batch_size: 128
   
   # 探索噪声
   noise_type: "ou"          # Ornstein-Uhlenbeck噪声
@@ -132,11 +141,11 @@ llm_maddpg:
   
   # LLM特定训练参数
   max_episodes: 1000         # 🆕 LLM指导下可以用更少轮数达到收敛
-  max_steps: 100           # 🆕 每轮步数可以适当减少
-  train_frequency: 50      # 🆕 每50步训练一次（给LLM指导更多发挥空间）
+  max_steps: 200           # 🆕 每轮步数可以适当减少
+  train_frequency: 50       # 🆕 每50步训练一次（给LLM指导更多发挥空间）
   
   # LLM指导策略
-  llm_episode_interval: 2   # 🆕 每2个Episode使用一次LLM指导
+  llm_episode_interval: 10   # 🆕 每10个Episode使用一次LLM指导
   llm_distill_weight: 0.1   # 🆕 LLM知识蒸馏权重（固定权重模式下使用）
   
   # 🆕 三阶段退火策略配置
@@ -165,7 +174,7 @@ llm:
   
   # 连接参数
   timeout: 120              # 连接超时时间(秒)
-  read_timeout: 300         # 读取超时时间(秒)
+  read_timeout: 500         # 读取超时时间(秒)
   max_retries: 1            # 最大重试次数
   
   # LLM指导参数
@@ -179,16 +188,17 @@ seed: 42
 # 测试配置
 testing:
   num_episodes: 200         # 🆕 测试轮数（从2000减少到200，提高测试效率）
-  max_steps: 100           # 🆕 测试时每轮最大步数
+  max_steps: 200            # 🆕 测试时每轮最大步数
   save_results: true        # 保存测试结果
   detailed_logging: true    # 详细日志
 
 # 训练配置（统一管理）
 training:
   # 通用训练参数
+  episodes: 1000             # 🆕 默认训练轮数（命令行参数默认值）
   save_frequency: 100       # 模型保存频率（每100轮保存一次）
   log_frequency: 20         # 日志输出频率（每20轮输出一次）
-  plot_frequency: 50        # 绘图频率（每50轮绘制一次）
+  plot_frequency: 500        # 绘图频率（每500轮绘制一次）
   
   # 训练策略
   warm_up_episodes: 0      # 🆕 预热轮数（不进行训练，只收集经验）
@@ -200,13 +210,13 @@ training:
     maddpg:
       enabled: true
       max_episodes: 1000
-      max_steps: 100
+      max_steps: 200
       train_frequency: 50
       
     llm_maddpg:
       enabled: true  
       max_episodes: 1000
-      max_steps: 100
+      max_steps: 200
       train_frequency: 50
       
     llm_only:
@@ -220,12 +230,12 @@ reward:
   # 奖励权重
   latency_weight: 10.0      # 时延改善奖励权重
   energy_weight: 5.0        # 能耗改善奖励权重
-  deadline_weight: 5.0      # 截止时间满足奖励权重
-  balance_weight: 0.01      # 负载均衡奖励权重
+  deadline_weight: 0.0      # 截止时间满足奖励权重
+  balance_weight: 0      # 负载均衡奖励权重
   
-  # 惩罚配置
-  overtime_penalty: 10.0    # 超时惩罚权重
-  communication_penalty: 0.1 # 过度通信惩罚（鼓励减少不必要的云端卸载）
+  # # 惩罚配置
+  # overtime_penalty: 10.0    # 超时惩罚权重
+  # communication_penalty: 0.1 # 过度通信惩罚（鼓励减少不必要的云端卸载）
 
 # 🆕 实验对比配置
 comparison:

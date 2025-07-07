@@ -113,6 +113,21 @@ class ResponseParser:
         if not text:
             return []
         
+        # 策略0: 预处理文本，去除可能干扰JSON解析的前后文本
+        try:
+            # 去除文本中可能的前缀说明和后缀解释
+            text = text.strip()
+            # 如果有明显的JSON起始和结束标记，尝试精确提取
+            json_content = re.search(r'(\{.*\})', text, re.DOTALL)
+            if json_content:
+                cleaned_text = json_content.group(1)
+                data = json.loads(cleaned_text)
+                if isinstance(data, dict) and 'strategies' in data:
+                    print("✅ 策略0成功：精确提取JSON对象")
+                    return data['strategies']
+        except Exception as e:
+            print(f"策略0失败: {e}")
+        
         # 策略1: 直接解析为JSON
         try:
             data = json.loads(text)
@@ -122,12 +137,12 @@ class ResponseParser:
             elif isinstance(data, dict) and 'strategies' in data:
                 print("✅ 策略1成功：从JSON对象的strategies字段提取")
                 return data['strategies']
-        except:
-            pass
+        except Exception as e:
+            print(f"策略1失败: {e}")
         
         # 策略2: 从markdown代码块中提取JSON
         try:
-            json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
+            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
             if json_match:
                 json_content = json_match.group(1).strip()
                 data = json.loads(json_content)

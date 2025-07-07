@@ -110,6 +110,12 @@ python main.py --mode test_only
 python main.py --mode llm_maddpg_only
 python main.py --mode maddpg_only
 python main.py --mode llm_only
+
+# 测试特定算法
+python main.py --mode test_maddpg_only --model-path results/experiment_YYYYMMDD_HHMMSS/maddpg/models
+python main.py --mode test_llm_maddpg_only --model-path results/experiment_YYYYMMDD_HHMMSS/llm_maddpg/models
+python main.py --mode test_llm_only --model-path results/experiment_YYYYMMDD_HHMMSS/llm/models
+
 ```
 
 ### 3. 🎮 服务器GPU训练（新增）
@@ -178,38 +184,6 @@ python main.py --gpu 1 --mode llm_maddpg_only --episodes 1000 --server-mode
 python main.py --gpu 2 --mode llm_only --episodes 500 --server-mode
 ```
 
-#### 性能建议
-- **RTX 4060**: 建议 `batch_size=32-64`, `episodes=500-1000`
-- **RTX 4070/4080**: 建议 `batch_size=64-128`, `episodes=1000-1500`
-- **RTX 4090**: 建议 `batch_size=128-256`, `episodes=1500-3000`
-- **服务器GPU**: 根据显存调整参数，建议使用 `--server-mode` 监控
-
-### 4. 单独使用训练脚本
-
-```bash
-# 训练LLM+MADDPG
-python experiments/train_llm_maddpg_complete.py
-
-# 训练纯MADDPG
-python experiments/train_maddpg.py
-
-# 训练纯LLM
-python experiments/train_llm.py
-```
-
-### 5. 单独使用测试脚本
-
-```bash
-# 测试LLM+MADDPG纯Agent模式(推荐)
-python experiments/test_llm_maddpg.py
-
-# 测试纯MADDPG
-python experiments/test_maddpg.py
-
-# 测试纯LLM  
-python experiments/test_llm.py
-```
-
 ## 📊 统一路径管理系统
 
 ### 自动目录结构
@@ -245,39 +219,6 @@ results/experiment_20250703_195030/
 - **LLM+MADDPG**: 完整格式 - `agent_{i}_final.pth`
 - **纯LLM**: 无需保存模型文件
 
-## 🔧 配置说明
-
-### 系统配置 (`config.yaml`)
-
-```yaml
-# 环境配置
-environment:
-  num_devices: 10      # 端设备数量
-  num_edges: 5         # 边缘服务器数量
-  num_clouds: 1        # 云服务器数量
-
-# LLM+MADDPG配置
-llm_maddpg:
-  max_episodes: 1000          # 训练轮数
-  llm_episode_interval: 2     # 每2个Episode使用LLM指导
-  llm_distill_weight: 0.1     # 知识蒸馏权重
-
-# 纯MADDPG配置
-maddpg:
-  max_episodes: 1000          # 训练轮数
-  train_frequency: 20         # 训练频率
-  
-# 测试配置
-testing:
-  num_episodes: 200    # 测试轮数
-  max_steps: 100      # 每轮最大步数
-
-# 训练策略
-training:
-  save_frequency: 100  # 模型保存频率
-  log_frequency: 10    # 日志输出频率
-```
-
 ## 🧪 算法特性
 
 ### 知识蒸馏机制
@@ -287,14 +228,6 @@ training:
 3. **总损失**: `L_total = L_policy + α * L_distill`
 4. **内化效果**: Agent逐渐学会独立决策
 
-### 测试模式对比
-
-| 模式 | LLM指导 | 模型格式 | 适用场景 | 性能特点 |
-|------|---------|----------|----------|----------|
-| LLM+MADDPG(训练) | ✅ | 完整模型 | 训练阶段 | 快速收敛，高质量策略 |
-| LLM+MADDPG(纯Agent) | ❌ | 完整模型 | 部署阶段 | 低延迟，无外部依赖 |
-| 纯MADDPG | ❌ | 分离模型 | 基线对比 | 传统强化学习效果 |
-| 纯LLM | ✅ | 无模型 | 实时决策 | 高质量但高延迟 |
 
 ### 动作空间
 
@@ -382,3 +315,4 @@ ls results/experiment_*/
 ## 📧 联系方式
 
 如有问题，请通过Issue或邮件联系开发团队。
+

@@ -52,8 +52,8 @@ def train_llm(config=None):
         use_mock=config['llm'].get('use_mock_when_unavailable', True)
     )
 
-    # 训练参数
-    max_episodes = config['maddpg']['max_episodes']
+    # 训练参数 - 优先使用命令行指定的episodes，否则使用配置文件中的值
+    max_episodes = config.get('training', {}).get('episodes', config['maddpg']['max_episodes'])
     max_steps = config['maddpg']['max_steps']
     num_agents = env.num_devices
 
@@ -72,6 +72,7 @@ def train_llm(config=None):
         episode_reward = 0
         episode_latencies = []  # 🆕 收集每步的延迟
         episode_energies = []   # 🆕 收集每步的能耗
+        step_means = []  # 新增：收集每个step所有智能体reward的均值
         
         for step in range(max_steps):
             # 获取LLM策略并执行
@@ -120,7 +121,8 @@ def train_llm(config=None):
             next_state, rewards, terminated, truncated, info = env.step(actions)
             done = terminated or truncated
             state = next_state
-            episode_reward += sum(rewards)
+            # 记录本step所有智能体reward的均值
+            step_means.append(np.mean(rewards))
             
             # 🆕 从info中提取延迟和能耗，过滤零值
             if info:
@@ -138,6 +140,9 @@ def train_llm(config=None):
             
             if done:
                 break
+        
+        # 统一episode reward计算方式
+        episode_reward = np.mean(step_means) if step_means else 0.0
         
         # Episode 结束，统计指标
         # 使用实际任务完成率而不是固定值

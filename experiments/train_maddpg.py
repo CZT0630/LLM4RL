@@ -86,8 +86,8 @@ def train_maddpg(config=None):
     plotter = Plotter(plot_dir)
     metrics_tracker = MetricsTracker()
 
-    # 训练参数
-    max_episodes = config['maddpg']['max_episodes']
+    # 训练参数 - 优先使用命令行指定的episodes，否则使用配置文件中的值
+    max_episodes = config.get('training', {}).get('episodes', config['maddpg']['max_episodes'])
     max_steps = config['maddpg']['max_steps']
     train_frequency = config['maddpg']['train_frequency']
     
@@ -118,6 +118,7 @@ def train_maddpg(config=None):
         # 判断是否在预热阶段
         is_warm_up = episode < warm_up_episodes
         
+        step_means = []  # 新增：收集每个step所有智能体reward的均值
         for step in range(max_steps):
             global_step_count += 1
             
@@ -202,10 +203,14 @@ def train_maddpg(config=None):
                           f"Critic损失={avg_critic_loss:.4f}, Actor损失={avg_actor_loss:.4f}")
             
             state = next_state
-            episode_reward += sum(rewards)
+            # 记录本step所有智能体reward的均值
+            step_means.append(np.mean(rewards))
             
             if done:
                 break
+        
+        # 统一episode reward计算方式
+        episode_reward = np.mean(step_means) if step_means else 0.0
         
         # Episode 结束，统计指标
         # 使用实际任务完成率而不是固定值

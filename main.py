@@ -394,23 +394,23 @@ def main():
     parser = argparse.ArgumentParser(description='LLM+MADDPG云边端计算卸载系统 - 服务器训练版')
     
     # 运行模式
-    parser.add_argument('--mode', choices=['all', 'train_only', 'test_only', 'llm_maddpg_only', 'maddpg_only', 'llm_only'], 
+    parser.add_argument('--mode', choices=['all', 'train_only', 'test_only', 'llm_maddpg_only', 
+                                          'maddpg_only', 'llm_only', 'test_maddpg_only', 
+                                          'test_llm_maddpg_only', 'test_llm_only'], 
                        default='all', help='运行模式')
     
     # GPU设置
     parser.add_argument('--gpu', type=int, default=None, help='指定GPU ID (默认: 自动选择)')
-    
     # 训练参数
     parser.add_argument('--episodes', type=int, default=None, help='训练轮数 (默认: 使用配置文件)')
-    
     # 文件设置
     parser.add_argument('--config', default='config.yaml', help='配置文件路径')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
-    
     # 服务器模式设置
     parser.add_argument('--server-mode', action='store_true', help='服务器模式: 显示详细信息和进度')
     parser.add_argument('--batch-train', action='store_true', help='批量训练: 按顺序训练所有算法')
-    
+    # 模型路径
+    parser.add_argument('--model-path', type=str, default=None, help='指定测试时加载的模型目录')
     args = parser.parse_args()
     
     # 打印启动横幅
@@ -566,7 +566,7 @@ def main():
                 test_results = run_algorithm_tests(path_manager, config)
         
         else:
-            # 🔧 修复：单独训练模式逻辑
+            # 单独训练模式逻辑
             print(f"\n{'='*80}")
             print("🎯 单独算法训练模式")
             print(f"{'='*80}")
@@ -664,12 +664,69 @@ def main():
                     training_results.update(pure_results)
             
             # 测试阶段
-            if args.mode in ['all', 'test_only']:
+            if args.mode in ['all', 'test_only', 'test_maddpg_only', 'test_llm_maddpg_only', 'test_llm_only']:
                 print(f"\n{'='*80}")
                 print("🎯 开始测试阶段")
                 print(f"{'='*80}")
                 
-                test_results = run_algorithm_tests(path_manager, config)
+                # 处理单独测试特定算法的情况
+                if args.mode == 'test_maddpg_only':
+                    print("\n🔬 仅测试 纯MADDPG...")
+                    try:
+                        maddpg_metrics = test_maddpg(model_path=args.model_path)
+                        if isinstance(maddpg_metrics, tuple) and len(maddpg_metrics) == 3:
+                            energy, util, delay = maddpg_metrics
+                            test_results['maddpg'] = {
+                                'energy': np.mean(energy) if energy else 0,
+                                'utilization': np.mean(util) if util else 0,
+                                'delay': np.mean(delay) if delay else 0,
+                                'energy_std': np.std(energy) if energy else 0,
+                                'utilization_std': np.std(util) if util else 0,
+                                'delay_std': np.std(delay) if delay else 0,
+                            }
+                            print(f"  ✅ 能耗: {test_results['maddpg']['energy']:.4f}, "
+                                  f"时延: {test_results['maddpg']['delay']:.4f}")
+                    except Exception as e:
+                        print(f"  ❌ 纯MADDPG测试失败: {e}")
+                elif args.mode == 'test_llm_maddpg_only':
+                    print("\n🔬 仅测试 LLM+MADDPG (纯Agent)...")
+                    try:
+                        llm_maddpg_metrics = test_llm_maddpg(model_path=args.model_path)
+                        if isinstance(llm_maddpg_metrics, tuple) and len(llm_maddpg_metrics) == 3:
+                            energy, util, delay = llm_maddpg_metrics
+                            test_results['llm_maddpg_pure_agent'] = {
+                                'energy': np.mean(energy) if energy else 0,
+                                'utilization': np.mean(util) if util else 0,
+                                'delay': np.mean(delay) if delay else 0,
+                                'energy_std': np.std(energy) if energy else 0,
+                                'utilization_std': np.std(util) if util else 0,
+                                'delay_std': np.std(delay) if delay else 0,
+                            }
+                            print(f"  ✅ 能耗: {test_results['llm_maddpg_pure_agent']['energy']:.4f}, "
+                                  f"时延: {test_results['llm_maddpg_pure_agent']['delay']:.4f}")
+                    except Exception as e:
+                        print(f"  ❌ LLM+MADDPG纯Agent测试失败: {e}")
+                elif args.mode == 'test_llm_only':
+                    print("\n🔬 仅测试 纯LLM...")
+                    try:
+                        llm_metrics = test_llm(model_path=args.model_path)
+                        if isinstance(llm_metrics, tuple) and len(llm_metrics) == 3:
+                            energy, util, delay = llm_metrics
+                            test_results['llm'] = {
+                                'energy': np.mean(energy) if energy else 0,
+                                'utilization': np.mean(util) if util else 0,
+                                'delay': np.mean(delay) if delay else 0,
+                                'energy_std': np.std(energy) if energy else 0,
+                                'utilization_std': np.std(util) if util else 0,
+                                'delay_std': np.std(delay) if delay else 0,
+                            }
+                            print(f"  ✅ 能耗: {test_results['llm']['energy']:.4f}, "
+                                  f"时延: {test_results['llm']['delay']:.4f}")
+                    except Exception as e:
+                        print(f"  ❌ 纯LLM测试失败: {e}")
+                else:
+                    # 默认批量测试
+                    test_results = run_algorithm_tests(path_manager, config)
         
         # 对比分析
         if args.mode == 'all' and (training_results or test_results):
