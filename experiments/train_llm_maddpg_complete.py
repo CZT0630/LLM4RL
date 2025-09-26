@@ -247,6 +247,7 @@ def train_llm_maddpg_complete(config_path):
     # 记录指标 - 使用MetricsTracker类保持与其他算法一致
     metrics_tracker = MetricsTracker()
     training_losses = []
+    episode_completion_rates = []  # 新增：记录每个episode的任务完成率
     
     # 全局step计数器
     global_step_count = 0
@@ -390,17 +391,30 @@ def train_llm_maddpg_complete(config_path):
             
             # 更新状态和奖励
             state = next_state
-            # 记录本step所有智能体reward的均值
-            step_means.append(np.mean(rewards))
+            # 记录本step所有智能体reward的均值（只考虑有任务的设备）
+            if info and 'has_task_list' in info:
+                valid_rewards = [r for r, has_task in zip(rewards, info['has_task_list']) if has_task]
+                if valid_rewards:
+                    step_means.append(np.mean(valid_rewards))
+                else:
+                    step_means.append(np.mean(rewards))  # 如果所有设备都没有任务，则使用全部均值
+            else:
+                # 如果没有has_task_list，则过滤掉0奖励（假设0奖励表示无任务）
+                valid_rewards = [r for r in rewards if r > 0]
+                if valid_rewards:
+                    step_means.append(np.mean(valid_rewards))
+                else:
+                    step_means.append(np.mean(rewards))  # 如果所有奖励都为0，则使用全部均值
             
             # 🆕 从info中提取延迟和能耗，过滤零值
             if info:
                 step_latencies = info.get('total_latencies', [])
                 step_energies = info.get('total_energies', [])
+                has_task_list = info.get('has_task_list', [True] * len(step_latencies))  # 默认所有设备都有任务
                 
-                # 过滤掉零值，只保留有效的任务处理数据
-                valid_latencies = [lat for lat in step_latencies if lat > 0]
-                valid_energies = [eng for eng in step_energies if eng > 0]
+                # 只保留有任务的设备的延迟和能耗数据
+                valid_latencies = [lat for lat, has_task in zip(step_latencies, has_task_list) if has_task and lat > 0]
+                valid_energies = [eng for eng, has_task in zip(step_energies, has_task_list) if has_task and eng > 0]
                 
                 if valid_latencies:
                     episode_latencies.extend(valid_latencies)
@@ -419,6 +433,9 @@ def train_llm_maddpg_complete(config_path):
         # 使用实际任务完成率而不是固定值
         completion_stats = env.get_task_completion_rate()
         episode_completion_rate = completion_stats.get('on_time_completion_rate', 0.0)
+        
+        # 记录本轮的任务完成率
+        episode_completion_rates.append(episode_completion_rate)
         
         # 计算平均延迟和能耗
         avg_latency = np.mean(episode_latencies) if episode_latencies else 0.0
@@ -474,15 +491,11 @@ def train_llm_maddpg_complete(config_path):
     # 保存训练统计数据
     logger.info("保存训练统计数据...")
     
-    # 计算所有episode的平均完成率作为代表值
-    final_completion_stats = env.get_task_completion_rate()
-    avg_completion_rate = final_completion_stats.get('on_time_completion_rate', 0.0)
-    
     training_data = {
         'episode_rewards': metrics_tracker.episode_rewards,
         'episode_latencies': metrics_tracker.episode_delays,
         'episode_energies': metrics_tracker.episode_energy,
-        'episode_completion_rates': [avg_completion_rate] * len(metrics_tracker.episode_rewards),
+        'episode_completion_rates': episode_completion_rates,  # 使用动态记录的完成率列表
         'training_losses': training_losses,
         'global_step_count': global_step_count,
         'config': config
@@ -500,7 +513,7 @@ def train_llm_maddpg_complete(config_path):
             episode_rewards=metrics_tracker.episode_rewards,
             episode_latencies=metrics_tracker.episode_delays,
             episode_energies=metrics_tracker.episode_energy,
-            episode_completion_rates=[avg_completion_rate] * len(metrics_tracker.episode_rewards),
+            episode_completion_rates=episode_completion_rates,  # 使用动态记录的完成率列表
             algorithm_name="LLM_MADDPG",
             save_dir=data_dir
         )
@@ -567,7 +580,7 @@ def train_llm_maddpg_complete(config_path):
         'episode_rewards': metrics_tracker.episode_rewards,
         'episode_latencies': metrics_tracker.episode_delays,
         'episode_energies': metrics_tracker.episode_energy,
-        'episode_completion_rates': [avg_completion_rate] * len(metrics_tracker.episode_rewards),
+        'episode_completion_rates': episode_completion_rates,  # 使用动态记录的完成率列表
         'training_losses': training_losses,
         'global_step_count': global_step_count,
         'config': config,

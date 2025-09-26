@@ -1,7 +1,7 @@
 # environment/device_models.py
 """
 简化的云边端设备模型
-- UE: CPU频率 + 电池 + 任务负载
+- UE: CPU频率 + 任务负载
 - ES: CPU频率 + 任务负载  
 - CS: CPU频率（资源无限）
 - 考虑差异化的通信延迟
@@ -24,7 +24,7 @@ class TaskExecution:
 class UserEquipment:
     """
     端侧设备（User Equipment, UE）
-    简化状态：[CPU频率, 电池, 任务负载]
+    简化状态：[CPU频率, 任务负载]
     """
     
     def __init__(self, device_id, cpu_frequency=None):
@@ -32,7 +32,7 @@ class UserEquipment:
         
         # CPU频率：0.5-1.0 GHz异构配置
         if cpu_frequency is None:
-            self.cpu_frequency = random.uniform(0.5, 2.0)  # GHz
+            self.cpu_frequency = random.uniform(0.5, 0.8)  # GHz
         else:
             self.cpu_frequency = cpu_frequency
             
@@ -40,16 +40,14 @@ class UserEquipment:
         # self.max_cpu_cycles = 500e6  # 500 * 10^6 cycles
         
         # 能耗参数
-        self.alpha_ue = 1e-26  # J/cycle
+        self.alpha_ue = 1e-10  # J/cycle
         self.transmission_power = 0.5  # W (传输功率)
         
         # 网络参数（差异化通信延迟）
         self.transmission_rate_to_edge = 1e9  # 1 Gbps到边缘（无线6G）
         self.transmission_rate_to_cloud = 100e6  # 100 Mbps到云端（经边缘中转，总延迟更高）
         
-        # 电池状态
-        self.battery_capacity = 4000.0  # mAh
-        self.battery = self.battery_capacity
+
         
         # 任务执行队列
         self.task_queue = []  # 当前执行和等待的任务
@@ -57,7 +55,6 @@ class UserEquipment:
         
     def reset(self):
         """重置设备状态"""
-        self.battery = self.battery_capacity
         self.task_queue.clear()
         self.current_execution = None
         
@@ -144,8 +141,8 @@ class UserEquipment:
         # UE到边缘的传输时间
         time_ue_to_edge = data_size_bits / self.transmission_rate_to_edge
         
-        # 边缘到云的传输时间（假设边缘到云带宽为10Gbps）
-        edge_to_cloud_rate = 10e9  # 10 Gbps
+        # 边缘到云的传输时间（假设边缘到云带宽为1Gbps）
+        edge_to_cloud_rate = 1e9  # 1 Gbps
         time_edge_to_cloud = data_size_bits / edge_to_cloud_rate
         
         # 总传输时间
@@ -157,20 +154,10 @@ class UserEquipment:
         energy = self.transmission_power * transmission_time
         return energy
     
-    def consume_battery(self, energy_joules):
-        """消耗电池电量"""
-        # 简化转换：将焦耳转换为mAh消耗（假设3.7V）
-        mah_consumed = energy_joules / (3.7 * 3600) * 1000
-        self.battery = max(0, self.battery - mah_consumed)
-    
-    def get_battery_percentage(self):
-        """获取电池百分比"""
-        return self.battery / self.battery_capacity
-    
     def get_state(self):
         """
         返回简化的设备状态
-        返回: [CPU频率(归一化), 电池百分比, 任务负载(归一化)]
+        返回: [CPU频率(归一化), 任务负载(归一化)]
         """
         # 任务负载归一化（假设最大60秒的任务负载）
         task_load = self.calculate_task_load()
@@ -178,7 +165,6 @@ class UserEquipment:
         
         return [
             self.cpu_frequency / 1.0,      # CPU频率归一化（最大1.0GHz）
-            self.get_battery_percentage(),  # 电池百分比
             task_load_norm                  # 任务负载归一化
         ]
 
@@ -194,10 +180,10 @@ class EdgeServer:
         self.cpu_frequency = cpu_frequency  # GHz
         
         # 能耗参数
-        self.alpha_es = 3e-26  # J/cycle
+        self.alpha_es = 3e-10  # J/cycle
         
         # 网络参数
-        self.transmission_rate_to_cloud = 10e9  # 10 Gbps到云端
+        self.transmission_rate_to_cloud = 1e9  # 1 Gbps到云端
         
         # 任务执行队列
         self.task_queue = []
@@ -298,7 +284,7 @@ class CloudServer:
         self.cpu_frequency = 20.0  # 20 GHz
         
         # 能耗参数（极低）
-        self.alpha_cs = 1e-27  # J/cycle
+        self.alpha_cs = 3e-10  # J/cycle
         
         # 并行处理能力
         self.parallel_factor = 8.0   # 强大的并行处理能力

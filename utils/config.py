@@ -23,8 +23,7 @@ def get_default_config():
             "num_clouds": 1,
             "device_config": {
                 "cpu_capacity": 2.0,
-                "memory_capacity": 4.0,
-                "battery_capacity": 100.0
+                "memory_capacity": 4.0
             },
             "edge_config": {
                 "cpu_capacity": 8.0,
@@ -53,7 +52,7 @@ def get_default_config():
             "lr_actor": 1e-4,
             "lr_critic": 1e-3,
             "gamma": 0.99,
-            "tau": 0.005,
+            "tau": 0.001,
             "buffer_size": int(1e6),
             "batch_size": 100,
             "max_episodes": 1000,

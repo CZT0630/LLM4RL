@@ -209,4 +209,4 @@ def analyze_deadline_violations(violation_records):
         'min_overtime': np.min(all_overtimes),
         'std_overtime': np.std(all_overtimes),
         'violation_by_type': analysis
-    }
+        }

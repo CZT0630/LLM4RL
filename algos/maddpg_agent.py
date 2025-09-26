@@ -86,7 +86,21 @@ class MADDPGAgent:
         
         # 处理边缘服务器ID（最后一个维度）
         if len(action) >= 2:
-            action[-1] = np.clip(action[-1] * 5, 0, 4)  # 5个边缘服务器，索引0-4
+            # 修改边缘服务器选择逻辑，使用更均匀的分布
+            # 1. 使用floor而不是简单的乘法，避免总是偏向高值
+            # 2. 添加随机扰动以增加多样性
+            edge_selection = action[-1]
+            
+            # 方法1: 使用floor函数，确保低值也有机会被选中
+            num_edges = 5  # 边缘服务器数量
+            edge_id = int(np.floor(edge_selection * num_edges))
+            
+            # 方法2: 添加小概率随机选择，增加探索
+            if np.random.random() < 0.2:  # 20%的概率随机选择
+                edge_id = np.random.randint(0, num_edges)
+                
+            # 确保边缘服务器ID在有效范围内
+            action[-1] = np.clip(edge_id, 0, num_edges - 1)
 
         return action
 

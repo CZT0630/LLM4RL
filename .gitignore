@@ -1,0 +1,66 @@
+# 忽略Python字节码文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 忽略Python虚拟环境
+venv/
+env/
+.env/
+*.venv/
+
+# 忽略IDE配置文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 忽略操作系统文件
+.DS_Store
+Thumbs.db
+
+# 忽略结果和数据文件夹
+results/
+*.csv
+*.xlsx
+*.jsonl
+
+# 忽略日志文件
+*.log
+logs/
+
+# 忽略配置文件（可选，取决于是否需要共享配置）
+# config.yaml
+
+# 忽略模型权重文件（如果有）
+*.pt
+*.pth
+*.ckpt
+models/
+
+# 忽略临时文件
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# 忽略测试覆盖率文件
+.coverage
+coverage/
+htmlcov/
+
+# 忽略构建输出
+build/
+dist/
+*.egg-info/
+
+# 忽略本地环境文件
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 忽略last_response.txt
+last_response.txt

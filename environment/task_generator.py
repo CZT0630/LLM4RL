@@ -10,9 +10,9 @@ class TaskGenerator:
     def __init__(self, config=None):
         # 任务数据大小范围 (MB)
         self.task_sizes = {
-            'small': (1, 5),      # 小任务：1-5 MB (传感器数据、文本处理)
-            'medium': (10, 50),   # 中任务：10-50 MB (短视频预处理、轻度图像识别)
-            'large': (100, 200)   # 大任务：100-200 MB (高清视频分析、复杂AI推理)
+            'small': (1.5, 2.0),      # 小任务：1-5 MB (传感器数据、文本处理)
+            'medium': (15, 20),   # 中任务：10-50 MB (短视频预处理、轻度图像识别)
+            'large': (150, 200)   # 大任务：100-200 MB (高清视频分析、复杂AI推理)
         }
         
         # 处理密度：0.2 Gcycles/MB
@@ -20,16 +20,16 @@ class TaskGenerator:
         
         # 任务类型分布权重
         self.task_type_weights = {
-            'small': 0.5,   # 50%小任务
-            'medium': 0.4,  # 40%中任务  
-            'large': 0.1    # 10%大任务
+            'small': 1.0,   # 100%小任务
+            'medium': 0.0,  # 0%中任务  
+            'large': 0.0    # 0%大任务
         }
         
         # 截止时间参数（基于任务大小动态设置）
         self.deadline_factors = {
-            'small': (2.0, 5.0),    # 小任务：2-5倍本地执行时间
-            'medium': (1.5, 3.0),   # 中任务：1.5-3倍本地执行时间
-            'large': (1.2, 2.0)     # 大任务：1.2-2倍本地执行时间
+            'small': (4.0, 5.0),    # 小任务：4-5倍本地执行时间
+            'medium': (3.0, 4.0),   # 中任务：3-4倍本地执行时间
+            'large': (2.0 , 3.0)     # 大任务：2-3倍本地执行时间
         }
         
         # 新增泊松到达过程配置
@@ -172,7 +172,7 @@ class TaskGenerator:
         else:
             self.current_pattern_phase = 'normal'
             return 1.0
-    
+
     def generate_tasks(self, num_tasks):
         """生成多个任务"""
         tasks = []

@@ -1,7 +1,7 @@
 # environment/cloud_edge_env.py
 """
 云边端三层架构卸载环境 - 简化版设备模型
-- UE: CPU频率 + 电池 + 任务负载
+- UE: CPU频率 + 任务负载
 - ES: CPU频率 + 任务负载
 - CS: CPU频率（资源无限）
 - 考虑差异化通信延迟：边缘通信快，云端通信慢
@@ -188,7 +188,12 @@ class CloudEdgeDeviceEnv(gym.Env):
         
         # Episode控制
         self.episode_step = 0
-        self.max_steps = 100
+        
+        # 从配置中读取max_steps，而不是硬编码为100
+        # 优先从maddpg配置读取，如果不存在则从training配置读取，如果都不存在则默认为200
+        self.max_steps = config.get('maddpg', {}).get('max_steps', 
+                          config.get('training', {}).get('max_steps_per_episode', 200))
+        print(f"环境初始化: 最大步数设置为 {self.max_steps}")
         
         # 🆕 任务生成控制
         self.last_generation_step = 0  # 上次生成任务的步数
@@ -223,8 +228,8 @@ class CloudEdgeDeviceEnv(gym.Env):
             ue = UserEquipment(i)
             self.user_equipments.append(ue)
             
-        # 创建边缘服务器（异构配置：{5, 6, 8, 10, 12} GHz）
-        edge_frequencies = [12, 11, 10, 9, 8]
+        # 创建边缘服务器（异构配置：{5, 6, 7, 8, 9} GHz）
+        edge_frequencies = [5, 6, 7, 8, 9]
         self.edge_servers = []
         for i in range(self.num_edges):
             es = EdgeServer(i, edge_frequencies[i % len(edge_frequencies)])
@@ -578,6 +583,7 @@ class CloudEdgeDeviceEnv(gym.Env):
         total_energies = []
         communication_latencies = []
         computation_latencies = []
+        has_task_list = []  # 新增：记录每个设备是否有任务
 
         for i in range(self.num_devices):
             # 🔧 安全地获取单个设备的动作
@@ -588,6 +594,10 @@ class CloudEdgeDeviceEnv(gym.Env):
             
             reward, metrics = self._execute_offloading_decision(i, action)
             rewards[i] = reward
+            
+            # 记录该设备是否有任务
+            has_task = reward > 0.0  # 如果奖励为0，说明没有任务
+            has_task_list.append(has_task)
             
             total_latencies.append(metrics['total_latency'])  # 总时延
             total_energies.append(metrics['total_energy'])  # 总能耗
@@ -605,8 +615,20 @@ class CloudEdgeDeviceEnv(gym.Env):
         print(f"{'='*80}")
         for i, reward in enumerate(rewards):
             print(f"  Device{i}: 奖励值 = {reward:.3f}")
-        print(f"  平均奖励: {np.mean(rewards):.3f}")
-        print(f"  奖励范围: [{np.min(rewards):.3f}, {np.max(rewards):.3f}]")
+        
+        # 计算有任务设备的平均奖励
+        valid_rewards = [r for r, has_task in zip(rewards, has_task_list) if has_task]
+        if valid_rewards:
+            avg_reward = np.mean(valid_rewards)
+            min_reward = np.min(valid_rewards)
+            max_reward = np.max(valid_rewards)
+        else:
+            avg_reward = 0.0
+            min_reward = 0.0
+            max_reward = 0.0
+            
+        print(f"  平均奖励: {avg_reward:.3f} (仅计算有任务的设备)")
+        print(f"  奖励范围: [{min_reward:.3f}, {max_reward:.3f}]")
 
         # 4. 检查终止条件
         max_steps_reached = self.episode_step >= self.max_steps
@@ -636,7 +658,9 @@ class CloudEdgeDeviceEnv(gym.Env):
             'timeout_reasons': self.task_completion_stats['timeout_reasons'].copy(),
             # 新增：MADDPG动作信息
             'maddpg_actions': actions.tolist(),
-            'maddpg_rewards': rewards.tolist()
+            'maddpg_rewards': rewards.tolist(),
+            # 新增：每个设备是否有任务的标志
+            'has_task_list': has_task_list
         }
 
         return self._get_observation(), rewards, terminated, truncated, info
@@ -705,8 +729,7 @@ class CloudEdgeDeviceEnv(gym.Env):
         
         # 计算奖励函数
         reward = self._calculate_reward(
-            total_latency, total_energy, baseline_latency, baseline_energy, task.deadline
-        )
+            total_latency, total_energy, baseline_latency, baseline_energy, task.deadline, edge_id)
         
         metrics = {
             'total_latency': total_latency,
@@ -748,8 +771,7 @@ class CloudEdgeDeviceEnv(gym.Env):
             comm_latencies.append(0.0)  # 本地无通信延迟
             comp_latencies.append(exec_time)
             
-            # 消耗电池
-            ue.consume_battery(energy)
+
             
             print(f"    本地执行: {workloads[0]/1e9:.2f}Gcycles, "
                   f"等待{current_load:.2f}s + 计算{exec_time:.2f}s")
@@ -780,8 +802,7 @@ class CloudEdgeDeviceEnv(gym.Env):
             comm_latencies.append(comm_time)
             comp_latencies.append(exec_time)
             
-            # 消耗电池（传输能耗）
-            ue.consume_battery(comm_energy)
+
             
             print(f"    边缘执行: {workloads[1]/1e9:.2f}Gcycles → ES{edge_id}, "
                   f"通信{comm_time:.2f}s + 等待{edge_load:.2f}s + 计算{exec_time:.2f}s")
@@ -808,8 +829,7 @@ class CloudEdgeDeviceEnv(gym.Env):
             comm_latencies.append(comm_time)
             comp_latencies.append(exec_time)
             
-            # 消耗电池（传输能耗）
-            ue.consume_battery(comm_energy)
+
             
             print(f"    云端执行: {workloads[2]/1e9:.2f}Gcycles → Cloud, "
                   f"通信{comm_time:.2f}s + 计算{exec_time:.2f}s")
@@ -838,12 +858,55 @@ class CloudEdgeDeviceEnv(gym.Env):
         return current_load + exec_time, energy
 
     def _calculate_reward(self, offload_latency, offload_energy, 
-                         baseline_latency, baseline_energy, deadline):
-        # 按用户要求，reward采用倒数加权公式
+                         baseline_latency, baseline_energy, deadline, edge_id=None):
+        """
+        计算奖励函数，包含负载均衡奖励项
+        
+        Args:
+            offload_latency: 卸载延迟
+            offload_energy: 卸载能耗
+            baseline_latency: 基准延迟（全本地执行）
+            baseline_energy: 基准能耗（全本地执行）
+            deadline: 任务截止时间
+            edge_id: 选择的边缘服务器ID（如果有）
+        
+        Returns:
+            float: 奖励值
+        """
+        # 基本奖励：延迟和能耗的倒数加权
         # 防止除零
         latency_term = 1.0 / offload_latency if offload_latency > 1e-8 else 0.0
         energy_term = 1.0 / offload_energy if offload_energy > 1e-8 else 0.0
-        total_reward = 0.5 * latency_term + 0.5 * energy_term
+        basic_reward = 0.5 * latency_term + 0.5 * energy_term
+        
+        # 负载均衡奖励项
+        load_balancing_reward = 0.0
+        if edge_id is not None:
+            # 计算所有边缘服务器的负载差异
+            loads = [es.calculate_task_load() for es in self.edge_servers]
+            
+            if sum(loads) > 0:  # 确保有负载
+                # 计算负载标准差，标准差越小表示越均衡
+                mean_load = sum(loads) / len(loads)
+                load_variance = sum((load - mean_load) ** 2 for load in loads) / len(loads)
+                load_std = load_variance ** 0.5
+                
+                # 负载标准差越小，奖励越大
+                # 使用指数衰减函数，当标准差为0时奖励最大为0.2
+                load_balancing_reward = 0.2 * np.exp(-2.0 * load_std)
+                
+                # 额外奖励：选择负载最低的服务器
+                min_load_idx = np.argmin(loads)
+                if edge_id == min_load_idx:
+                    load_balancing_reward += 0.1
+                    
+                # 调试输出
+                print(f"    负载均衡: 各服务器负载={[f'{load:.1f}' for load in loads]}, "
+                      f"标准差={load_std:.2f}, 奖励={load_balancing_reward:.2f}")
+        
+        # 总奖励 = 基本奖励 + 负载均衡奖励
+        total_reward = basic_reward + load_balancing_reward
+        
         return float(total_reward)
 
     def _print_step_summary(self):
@@ -857,8 +920,7 @@ class CloudEdgeDeviceEnv(gym.Env):
         for i in range(min(3, self.num_devices)):
             ue = self.user_equipments[i]
             load = ue.calculate_task_load()
-            battery = ue.get_battery_percentage()
-            print(f"    UE{i}: 任务负载={load:.1f}s, 电池={battery:.0%}")
+            print(f"    UE{i}: 任务负载={load:.1f}s")
         
         print("  边缘服务器负载:")
         for i, es in enumerate(self.edge_servers):
@@ -870,16 +932,16 @@ class CloudEdgeDeviceEnv(gym.Env):
         获取环境观察（简化版）
         
         状态组成：
-        1. UE状态：CPU频率、电池、任务负载
+        1. UE状态：CPU频率、任务负载
         2. ES状态：CPU频率、任务负载  
         3. CS状态：CPU频率
         4. 任务状态：类型、数据大小、CPU周期、截止时间、剩余时间、紧急程度
         """
         observation = []
         
-        # 1. UE状态 (每个设备3个特征)
+        # 1. UE状态 (每个设备2个特征)
         for ue in self.user_equipments:
-            ue_state = ue.get_state()  # [CPU频率, 电池, 任务负载]
+            ue_state = ue.get_state()  # [CPU频率, 任务负载]
             observation.extend(ue_state)
             
         # 2. ES状态 (每个服务器2个特征)
@@ -959,14 +1021,14 @@ class CloudEdgeDeviceEnv(gym.Env):
             raise ValueError(f"Agent ID {agent_id} 超出范围 [0, {self.num_devices-1}]")
         
         # 状态分割点计算
-        ue_states_end = self.num_devices * 3  # 30
-        es_states_end = ue_states_end + self.num_edges * 2  # 40  
-        cs_states_end = es_states_end + self.num_clouds * 1  # 41
-        task_states_end = cs_states_end + self.num_devices * 6  # 101
+        ue_states_end = self.num_devices * 2
+        es_states_end = ue_states_end + self.num_edges * 2
+        cs_states_end = es_states_end + self.num_clouds * 1
+        task_states_end = cs_states_end + self.num_devices * 6
         
-        # 1. 提取当前Agent的UE状态 (3维)
-        agent_ue_start = agent_id * 3
-        agent_ue_state = global_state[agent_ue_start:agent_ue_start + 3]
+        # 1. 提取当前Agent的UE状态 (2维)
+        agent_ue_start = agent_id * 2
+        agent_ue_state = global_state[agent_ue_start:agent_ue_start + 2]
         
         # 2. 提取所有边缘服务器状态 (10维) - 共享信息
         es_state = global_state[ue_states_end:es_states_end]
@@ -992,14 +1054,14 @@ class CloudEdgeDeviceEnv(gym.Env):
         """获取单个Agent的状态维度
         
         Agent状态结构：
-        - 自己UE状态: 3维 (CPU频率, 电池, 任务负载)
+        - 自己UE状态: 2维 (CPU频率, 任务负载)
         - 所有ES状态: 2×5=10维 (CPU频率, 任务负载)
         - CS状态: 1维 (CPU频率)
         - 自己任务状态: 6维 (任务类型, 数据大小, CPU周期, 截止时间, 剩余时间, 紧急程度)
         
-        总计: 3 + 10 + 1 + 6 = 20维
+        总计: 2 + 10 + 1 + 6 = 19维
         """
-        return 3 + (self.num_edges * 2) + (self.num_clouds * 1) + 6
+        return 2 + (self.num_edges * 2) + (self.num_clouds * 1) + 6
 
     def get_device_info(self):
         """获取设备信息（用于LLM咨询）"""
@@ -1008,7 +1070,6 @@ class CloudEdgeDeviceEnv(gym.Env):
             info = {
                 'device_id': i,
                 'cpu_frequency': ue.cpu_frequency,
-                'battery_percentage': ue.get_battery_percentage(),
                 'task_load': ue.calculate_task_load()
             }
             device_info.append(info)
@@ -1069,9 +1130,8 @@ class CloudEdgeDeviceEnv(gym.Env):
             for i in range(min(3, self.num_devices)):
                 ue = self.user_equipments[i]
                 load = ue.calculate_task_load()
-                battery = ue.get_battery_percentage()
                 print(f"  UE{i}: CPU={ue.cpu_frequency:.1f}GHz, "
-                      f"负载={load:.1f}s, 电池={battery:.0%}")
+                      f"负载={load:.1f}s")
             
             # 显示边缘服务器状态
             print("\n边缘服务器状态:")

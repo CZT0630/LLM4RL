@@ -1,6 +1,6 @@
 # config.yaml
 # 云边端三层架构实验配置 - 简化设备模型版本
-# UE: CPU频率 + 电池 + 任务负载
+# UE: CPU频率 + 任务负载
 # ES: CPU频率 + 任务负载
 # CS: CPU频率（资源无限）
 
@@ -23,20 +23,19 @@ environment:
     normalize: true
     include_task_info: true
     # 简化后的状态维度：
-    # UE: 3个特征 × 10设备 = 30
+    # UE: 2个特征 × 10设备 = 20
     # ES: 2个特征 × 5服务器 = 10  
     # CS: 1个特征 × 1服务器 = 1
     # 任务: 6个特征 × 10任务 = 60
-    # 总计: 101维
+    # 总计: 91维
 
 # 设备配置（简化版）
 device_specs:
   user_equipment:
     count: 10
-    # 简化属性：CPU频率 + 电池 + 任务负载
+    # 简化属性：CPU频率 + 任务负载
     cpu_frequency_range: [0.5, 0.8]    # GHz，异构配置
-    battery_capacity: 4000              # mAh
-    alpha_ue: 1e-26                     # J/cycle（能耗系数）
+    alpha_ue: 1e-10                     # J/cycle（能耗系数）
     transmission_power: 0.5             # W（传输功率）
     
     # 差异化通信配置
@@ -47,24 +46,24 @@ device_specs:
     count: 5
     # 简化属性：CPU频率 + 任务负载
     cpu_frequencies: [5, 6, 7, 8, 9]  # GHz，异构配置
-    alpha_es: 3e-26                     # J/cycle（能耗系数）
-    transmission_rate_to_cloud: 1e9    # 1 Gbps（边缘→云端）
+    alpha_es: 3e-10                     # J/cycle（能耗系数）
+    transmission_rate_to_cloud: 1e8    # 1 Gbps（边缘→云端）
     
   cloud_servers:
     count: 1
     # 简化属性：仅CPU频率（资源无限）
     cpu_frequency: 20                   # GHz
-    alpha_cs: 3e-26                    # J/cycle（能耗系数）
+    alpha_cs: 3e-10                    # J/cycle（能耗系数）
     parallel_factor: 8.0               # 强大的并行处理能力
 
 # 网络配置（差异化通信延迟）
 network:
   # 边缘通信：快速、低延迟
-  ue_to_edge_rate: 1e9        # 1 Gbps (6G无线，直连)
+  ue_to_edge_rate: 1e8        # 1 Gbps (6G无线，直连)
   
   # 云端通信：慢速、高延迟（需要中转）  
-  ue_to_cloud_total_rate: 100e6  # 100 Mbps (UE→边缘→云的总带宽)
-  edge_to_cloud_rate: 1e9    # 1 Gbps (边缘→云端，光纤)
+  ue_to_cloud_total_rate: 10e6  # 10 Mbps (UE→边缘→云的总带宽)
+  edge_to_cloud_rate: 1e8    # 1 Gbps (边缘→云端，光纤)
   
   # 延迟模型说明：
   # - 边缘卸载：UE直接传输到边缘，低延迟
@@ -79,26 +78,26 @@ tasks:
   # 任务类型定义
   task_types:
     small:
-      data_range: [1, 5]       # MB
+      data_range: [1.5, 2]       # MB
       description: "传感器数据、文本处理"
-      probability: 1         # 100%概率
-      deadline_multiplier: 2.5 # 本地执行时间的2.5倍
+      probability: 1.0         # 50%概率
+      deadline_multiplier: 4.0 # 本地执行时间的2.5倍
       
     medium:
-      data_range: [10, 50]     # MB  
+      data_range: [15, 20]     # MB  
       description: "短视频预处理、轻度图像识别"
-      probability: 0.0         # 0%概率
-      deadline_multiplier: 2.0 # 本地执行时间的2倍
+      probability: 0.0         # 20%概率
+      deadline_multiplier: 3.0 # 本地执行时间的2倍
       
     large:
-      data_range: [100, 200]   # MB
+      data_range: [150, 200]   # MB
       description: "高清视频分析、复杂AI推理"
       probability: 0.0           # 0%概率
-      deadline_multiplier: 1.5 # 本地执行时间的1.5倍
+      deadline_multiplier: 2.0 # 本地执行时间的1.5倍
   
   # 泊松到达过程配置
   poisson_config:
-    base_arrival_rate: 0.6     # 基础到达率（每步每设备平均任务数）
+    base_arrival_rate: 0.5     # 基础到达率（每步每设备平均任务数）
     time_pattern_enabled: false # 启用时间模式
     pattern_cycle: 20          # 时间模式周期（步数）
     peak_hours: [5, 15]        # 高峰时段（在周期内的位置）
@@ -119,8 +118,8 @@ maddpg:
   train_frequency: 50        # 🆕 每50步训练一次（平衡训练效率和稳定性）
   
   # 学习率
-  lr_actor: 0.0001
-  lr_critic: 0.0001
+  lr_actor: 0.00001
+  lr_critic: 0.00001
   gamma: 0.99               # 折扣因子
   tau: 0.005                # 软更新系数
   
@@ -221,8 +220,8 @@ training:
       
     llm_only:
       enabled: true
-      max_episodes: 1000     # 🆕 纯LLM算法episode数
-      max_steps: 1
+      max_episodes: 100     # 🆕 纯LLM算法episode数
+      max_steps: 10
       train_frequency: null  # 纯LLM不需要训练频率
 
 # 奖励函数配置
@@ -243,8 +242,8 @@ comparison:
   run_all_algorithms: true   # 是否运行所有算法进行对比
   
   # 统一测试参数
-  test_episodes: 100
-  test_steps: 100
+  test_episodes: 1000
+  test_steps: 200
   
   # 性能指标计算
   metrics_window: 50        # 计算平均性能的窗口大小
@@ -255,31 +254,28 @@ comparison:
 
 # 简化设计原则
 design_principles:
-  - "边缘场景的时延敏感性：队列等待时间比资源利用率更重要"
-  - "CPU频率是设备计算能力的最直接指标"
-  - "电池约束是移动设备的根本限制"
-  - "任务负载 = 当前执行剩余时间 + 队列中所有任务处理时间"
-  - "云服务器资源无限，无任务负载概念"
-  - "差异化通信延迟：边缘快速、云端慢速，平衡计算卸载选择"
-  - "训练频率优化：MADDPG更频繁训练，LLM+MADDPG给专家指导更多空间"
+    - "边缘场景的时延敏感性：队列等待时间比资源利用率更重要"
+    - "CPU频率是设备计算能力的最直接指标"
+    - "任务负载 = 当前执行剩余时间 + 队列中所有任务处理时间"
+    - "云服务器资源无限，无任务负载概念"
+    - "差异化通信延迟：边缘快速、云端慢速，平衡计算卸载选择"
+    - "训练频率优化：MADDPG更频繁训练，LLM+MADDPG给专家指导更多空间"
 
 # 实验假设条件（更新）
 assumptions:
-  - "网络带宽在短时窗口内稳定，但边缘和云端通信存在显著延迟差异"
-  - "任务分割后无依赖关系，可按任意比例划分和卸载"  
-  - "边缘服务器资源有限，存在队列等待；云服务器资源无限"
-  - "采用时分多址(TDMA)技术避免干扰"
-  - "UE电池容量有限，需要考虑能耗约束"
-  - "云端卸载经边缘服务器中转，总通信延迟更高"
-  - "🆕 训练频率差异化：纯强化学习需要更频繁更新，专家指导学习需要更多时间消化知识"
+    - "网络带宽在短时窗口内稳定，但边缘和云端通信存在显著延迟差异"
+    - "任务分割后无依赖关系，可按任意比例划分和卸载"  
+    - "边缘服务器资源有限，存在队列等待；云服务器资源无限"
+    - "采用时分多址(TDMA)技术避免干扰"
+    - "云端卸载经边缘服务器中转，总通信延迟更高"
+    - "🆕 训练频率差异化：纯强化学习需要更频繁更新，专家指导学习需要更多时间消化知识"
 
 # 性能指标
 metrics:
-  - "平均任务完成时延"
-  - "总能耗消耗"
-  - "截止时间满足率"
-  - "边缘服务器负载均衡度"
-  - "通信效率（边缘vs云端卸载比例）"
-  - "设备电池消耗率"
-  - "🆕 训练收敛速度"
-  - "🆕 算法性能对比"
+    - "平均任务完成时延"
+    - "总能耗消耗"
+    - "截止时间满足率"
+    - "边缘服务器负载均衡度"
+    - "通信效率（边缘vs云端卸载比例）"
+    - "🆕 训练收敛速度"
+    - "🆕 算法性能对比"

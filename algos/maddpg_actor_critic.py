@@ -50,11 +50,22 @@ class Actor(nn.Module):
         combined = torch.cat([state_repr, llm_repr], dim=1)
 
         # 生成动作
-        action = self.combined(combined)
-        action[:, 0] = torch.sigmoid(action[:, 0])  # 卸载比例限制在[0,1]
-        action[:, 1] = torch.tanh(action[:, 1]) * (self.max_action - 1)  # 目标节点索引
-        action[:, 1] = (action[:, 1] + self.max_action - 1) / 2  # 映射到[0, max_action-1]
-
+        action_raw = self.combined(combined)
+        
+        # 非inplace写法，避免梯度错误
+        action = torch.zeros_like(action_raw)
+        # 卸载比例限制在[0,1]
+        action[:, :3] = torch.sigmoid(action_raw[:, :3])
+        
+        # 改进边缘服务器选择的输出映射
+        if action.shape[1] > 3:
+            edge_val = torch.sigmoid(action_raw[:, 3])
+            # 可选：添加一个额外的正则化，使输出更加均匀
+            if self.training:
+                edge_bias = 0.5 - edge_val.mean()
+                edge_val = edge_val + edge_bias * 0.1
+                edge_val = torch.clamp(edge_val, 0.0, 1.0)
+            action[:, 3] = edge_val
         return action
 
 

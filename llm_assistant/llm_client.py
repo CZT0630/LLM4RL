@@ -448,8 +448,8 @@ class LLMClient:
                 if isinstance(obj, dict) and ('device_id' in obj or 'local_ratio' in obj):
                     valid_objects.append(obj)
             except:
-                continue
-        
+                    continue
+
         if valid_objects:
             converted = self._convert_field_names(valid_objects)
             validated = self._validate_format1_strategies(converted)
