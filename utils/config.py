@@ -5,11 +5,12 @@ def load_config(config_path="config.yaml"):
     """加载配置文件"""
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        # 如果没有seed则加上默认seed
-        if 'seed' not in config:
-            config['seed'] = 42
-        return config
+            loaded = yaml.safe_load(f) or {}
+        base = get_default_config()
+        merged = deep_update(dict(base), loaded)
+        if 'seed' not in merged:
+            merged['seed'] = 42
+        return merged
     except FileNotFoundError:
         print(f"配置文件 {config_path} 不存在，使用默认配置")
         return get_default_config()
@@ -58,5 +59,41 @@ def get_default_config():
             "max_episodes": 1000,
             "max_steps": 200
         },
+        "happo": {
+            "lr_actor": 3e-4,
+            "lr_critic": 1e-3,
+            "gamma": 0.99,
+            "lam": 0.95,
+            "clip_range": 0.2,
+            "kl_coeff": 0.5,
+            "entropy_coeff": 0.01,
+            "value_coeff": 0.5,
+            "update_epochs": 4,
+            "batch_size": 64,
+            "max_episodes": 200,
+            "max_steps": 200
+        },
+        "mappo": {
+            "lr_actor": 3e-4,
+            "lr_critic": 1e-3,
+            "gamma": 0.99,
+            "lam": 0.95,
+            "clip_range": 0.2,
+            "entropy_coeff": 0.01,
+            "value_coeff": 0.5,
+            "update_epochs": 4,
+            "batch_size": 64,
+            "max_episodes": 200,
+            "max_steps": 200
+        },
         "seed": 42
     }
+
+def deep_update(base, overrides):
+    """深度合并字典"""
+    for k, v in overrides.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            base[k] = deep_update(base.get(k, {}), v)
+        else:
+            base[k] = v
+    return base

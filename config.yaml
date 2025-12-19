@@ -159,6 +159,33 @@ llm_maddpg:
   # 早期探索增强
   exploration_episodes: 900  # 🆕 前80%轮数增加探索（0.9 * 1000）
 
+mappo:
+  lr_actor: 0.0003
+  lr_critic: 0.001
+  gamma: 0.99
+  lam: 0.95
+  clip_range: 0.2
+  entropy_coeff: 0.01
+  value_coeff: 0.5
+  update_epochs: 4
+  batch_size: 64
+  max_episodes: 200
+  max_steps: 200
+
+happo:
+  lr_actor: 0.0003
+  lr_critic: 0.001
+  gamma: 0.99
+  lam: 0.95
+  clip_range: 0.2
+  kl_coeff: 0.5
+  entropy_coeff: 0.01
+  value_coeff: 0.5
+  update_epochs: 4
+  batch_size: 64
+  max_episodes: 200
+  max_steps: 200
+
 # LLM配置
 llm:
   # LLM服务配置（qwen3-14b）

@@ -3,7 +3,7 @@ import torch
 import os
 import gymnasium as gym
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
-from algos.maddpg_agent import MADDPGAgent
+from algos.maddpg.maddpg_agent import MADDPGAgent
 from utils.config import load_config
 from utils.path_manager import get_path_manager
 from utils.csv_saver import save_test_results_csv

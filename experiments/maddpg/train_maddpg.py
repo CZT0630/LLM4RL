@@ -4,8 +4,8 @@ import random
 import torch
 import gymnasium as gym
 from environment.cloud_edge_env import CloudEdgeDeviceEnv
-from algos.maddpg_agent import MADDPGAgent
-from algos.replay_buffer import ReplayBuffer
+from algos.maddpg.maddpg_agent import MADDPGAgent
+from algos.maddpg.replay_buffer import ReplayBuffer
 from utils.plotting import Plotter
 from utils.metrics import MetricsTracker
 from utils.config import load_config
@@ -44,7 +44,7 @@ def train_maddpg(config=None):
     os.makedirs(log_dir, exist_ok=True)
 
     # 创建环境
-    env = CloudEdgeDeviceEnv(config['environment'])
+    env = CloudEdgeDeviceEnv(config)
 
     # 创建MADDPG智能体
     # 使用正确的单个Agent状态维度
